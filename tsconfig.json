@@ -1,0 +1,19 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    "module": "commonjs",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "moduleResolution": "node",
+    "declaration": true,
+    "sourceMap": true,
+    
+    // --- NEW: The Colyseus Lifesavers ---
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true, 
+    "useDefineForClassFields": false
+  },
+  "include": ["src/**/*"]
+}
