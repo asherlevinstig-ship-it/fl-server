@@ -1,5 +1,4 @@
 {
-  "extends": "../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
@@ -9,11 +8,16 @@
     "moduleResolution": "node",
     "declaration": true,
     "sourceMap": true,
-    
-    // --- NEW: The Colyseus Lifesavers ---
+
     "experimentalDecorators": true,
-    "emitDecoratorMetadata": true, 
-    "useDefineForClassFields": false
+    "emitDecoratorMetadata": true,
+    "useDefineForClassFields": false,
+
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "strict": false
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
 }
