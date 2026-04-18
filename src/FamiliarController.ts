@@ -1,11 +1,28 @@
-import { Client } from "colyseus";
-import { BaseRoom, applyAffliction, Hazard } from "./rooms/BaseRoom";
 import { PlayerState } from "./schema/PlayerState";
 import { FamiliarState } from "./schema/FamiliarState";
-import { distSq } from "./game/CollisionSystem";
+import { EnemyState } from "./schema/EnemyState";
+import { BaseRoom, applyAffliction, Hazard, IBaseState } from "./rooms/BaseRoom";
 
-// NEW: Import the database functions from your new data file!
-import { getSkillDef, getAbilityCategory } from "./data/AbilityDatabase";
+// ==========================================
+// 0.17 CLIENT ABSTRACTION
+// ==========================================
+export type RoomClient = {
+    sessionId: string;
+    send: (type: string, message?: any) => void;
+};
+
+// Explicitly type the state to bypass 0.17 generic opacity
+export type RoomWithState = BaseRoom<IBaseState> & {
+    state: IBaseState;
+    scheduledEvents?: { executeAt: number, fn: () => void }[];
+};
+
+// ==========================================
+// PERFORMANCE: FAST MATH HELPERS
+// ==========================================
+function distSq(x1: number, y1: number, x2: number, y2: number): number {
+    return (x1 - x2) ** 2 + (y1 - y2) ** 2;
+}
 
 // --- HELPER: MAP CORE SKILL TO FAMILIAR TYPE ---
 const FAMILIAR_CORE_MAP: Record<string, string> = {
@@ -26,7 +43,7 @@ const FAMILIAR_CORE_MAP: Record<string, string> = {
  * Synchronizes the existence of familiars.
  * Checks if a player has a familiar equipped. If so, spawns it. If not, removes it.
  */
-export function syncFamiliars(room: BaseRoom<any>) {
+export function syncFamiliars(room: RoomWithState) {
     if (!room.state.familiars) return;
 
     room.state.players.forEach((player: PlayerState, sessionId: string) => {
@@ -86,7 +103,7 @@ export function syncFamiliars(room: BaseRoom<any>) {
 /**
  * Handles Slot 9 active commands for familiars.
  */
-export function handleFamiliarAbility(room: BaseRoom<any>, client: Client, message: { abilityId: string, targetX: number, targetZ: number }) {
+export function handleFamiliarAbility(room: RoomWithState, client: RoomClient, message: { abilityId: string, targetX: number, targetZ: number }) {
     if (!room.state.familiars) return;
 
     const player = room.state.players.get(client.sessionId);
@@ -253,7 +270,7 @@ export function handleFamiliarAbility(room: BaseRoom<any>, client: Client, messa
 /**
  * Main update loop for all familiars in a room.
  */
-export function updateFamiliars(room: BaseRoom<any>, dt: number) {
+export function updateFamiliars(room: RoomWithState, dt: number) {
     if (!room.state.familiars) return;
 
     room.state.familiars.forEach((familiar: FamiliarState, id: string) => {
@@ -315,7 +332,7 @@ export function updateFamiliars(room: BaseRoom<any>, dt: number) {
 }
 
 /** 1. COLIN (SWARM) LOGIC **/
-function updateColinLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateColinLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     const coreRank = owner.skillTree.activeAbilities.get("swarm_base")?.upgrades.get("endless_hunger")?.currentRank || 0;
     const branchRank = owner.skillTree.activeAbilities.get("devour_branch")?.upgrades.get("feast_of_blood")?.currentRank || 0;
 
@@ -367,7 +384,7 @@ function updateColinLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: P
 }
 
 /** 2. GORDON (ARBITER) LOGIC **/
-function updateGordonLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateGordonLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     const coreRank = owner.skillTree.activeAbilities.get("arbiter_base")?.upgrades.get("cosmic_judgment")?.currentRank || 0;
     const branchRank = owner.skillTree.activeAbilities.get("annihilation_branch")?.upgrades.get("focused_beam")?.currentRank || 0;
     
@@ -425,7 +442,7 @@ function updateGordonLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: 
 }
 
 /** 3. SHADE (VOID SERVANT) LOGIC **/
-function updateShadeLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateShadeLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     const coreRank = owner.skillTree.activeAbilities.get("shade_base")?.upgrades.get("shadow_meld")?.currentRank || 0;
     
     // Passive stealth if standing still
@@ -446,7 +463,7 @@ function updateShadeLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: P
 }
 
 /** 4. MONARCH (SHADOW ARMY) LOGIC **/
-function updateMonarchLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateMonarchLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     // Override direct command
     if (familiar.action === "attacking") {
         familiar.actionTimer -= dt;
@@ -497,7 +514,7 @@ function updateMonarchLogic(room: BaseRoom<any>, familiar: FamiliarState, owner:
 }
 
 /** 5. STASH (DRAGON HOARDER) LOGIC **/
-function updateStashLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateStashLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     if (familiar.action === "transformed") {
         familiar.actionTimer -= dt;
         familiar.tickTimer -= dt;
@@ -534,7 +551,7 @@ function updateStashLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: P
 }
 
 /** 6. PIXIE (SYMBIOTIC SPIRIT) LOGIC **/
-function updatePixieLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updatePixieLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     const coreRank = owner.skillTree.activeAbilities.get("pixie_base")?.upgrades.get("cleansing_light")?.currentRank || 0;
     familiar.tickTimer -= dt;
 
@@ -560,7 +577,7 @@ function updatePixieLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: P
 }
 
 /** 7. GEMINI (ASTRAL REFLECTION) LOGIC **/
-function updateGeminiLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateGeminiLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     // The Gemini clone does NOT detach or hunt autonomously. 
     // It must remain in 'orbiting' mode so that BaseRoom.ts can trigger its attack mimicry.
     familiar.isDetached = false;
@@ -568,7 +585,7 @@ function updateGeminiLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: 
 }
 
 /** 8. BEAST (ANIMAL) LOGIC **/
-export function updateBeastLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+export function updateBeastLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     // --- 1. ACTIVE COMMAND (SLOT 9: Kill Command) ---
     if (familiar.action === "attacking") {
         const dx = familiar.targetX - familiar.x;
@@ -648,7 +665,7 @@ export function updateBeastLogic(room: BaseRoom<any>, familiar: FamiliarState, o
 }
 
 /** 9. SERAPH (LIGHT) LOGIC **/
-function updateSeraphLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateSeraphLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     const coreRank = owner.skillTree.activeAbilities.get("seraph_base")?.upgrades.get("holy_presence")?.currentRank || 0;
     
     // --- 1. ACTIVE COMMAND (SLOT 9: Aegis Wall) ---
@@ -745,7 +762,7 @@ function updateSeraphLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: 
 }
 
 /** 10. GRYPHON (STORM) LOGIC **/
-function updateGryphonLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateGryphonLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     const coreRank = owner.skillTree.activeAbilities.get("gryphon_base")?.upgrades.get("wind_weaver")?.currentRank || 0;
     const skyRank = owner.skillTree.activeAbilities.get("sky_lord_branch")?.upgrades.get("aerial_superiority")?.currentRank || 0;
     
@@ -795,7 +812,7 @@ function updateGryphonLogic(room: BaseRoom<any>, familiar: FamiliarState, owner:
 }
 
 /** 11. BEHEMOTH (IRONCLAD) LOGIC **/
-function updateBehemothLogic(room: BaseRoom<any>, familiar: FamiliarState, owner: PlayerState, dt: number) {
+function updateBehemothLogic(room: RoomWithState, familiar: FamiliarState, owner: PlayerState, dt: number) {
     const coreRank = owner.skillTree.activeAbilities.get("behemoth_base")?.upgrades.get("walking_fortress")?.currentRank || 0;
     const siegeRank = owner.skillTree.activeAbilities.get("siege_engine_branch")?.upgrades.get("juggernaut")?.currentRank || 0;
     

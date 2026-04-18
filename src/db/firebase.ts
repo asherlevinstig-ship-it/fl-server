@@ -1,21 +1,33 @@
 import * as admin from "firebase-admin";
+import * as dotenv from "dotenv";
+import * as fs from "fs";
+import * as path from "path";
 
-// Firebase needs your service account credentials to access the database from a Node server.
-// The easiest way is to download your serviceAccountKey.json from the Firebase Console,
-// place it in your server folder, and reference it here. 
-// Alternatively, if you set the GOOGLE_APPLICATION_CREDENTIALS env variable, you can just call admin.initializeApp()
+dotenv.config();
 
 try {
-  // If you downloaded a key file, uncomment the line below and point it to your file:
-  // const serviceAccount = require("../../serviceAccountKey.json");
-  
+  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+  if (!credentialsPath) {
+    throw new Error("Missing GOOGLE_APPLICATION_CREDENTIALS environment variable.");
+  }
+
+  const absolutePath = path.resolve(credentialsPath);
+
+  if (!fs.existsSync(absolutePath)) {
+    throw new Error(`Service account file not found at: ${absolutePath}`);
+  }
+
+  const serviceAccount = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
+
   admin.initializeApp({
-    // credential: admin.credential.cert(serviceAccount)
-    credential: admin.credential.applicationDefault() // Uses GOOGLE_APPLICATION_CREDENTIALS from your .env
+    credential: admin.credential.cert(serviceAccount)
   });
-  console.log("Firebase Admin initialized successfully.");
+
+  console.log("🔥 Firebase Admin initialized successfully.");
 } catch (error) {
-  console.error("Firebase Admin initialization error", error);
+  console.error("❌ CRITICAL: Firebase Admin initialization error:", error);
+  process.exit(1);
 }
 
 export const db = admin.firestore();

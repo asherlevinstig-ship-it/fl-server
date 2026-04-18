@@ -1,4 +1,4 @@
-import { Room, Client } from "colyseus";
+import { Room, Client } from "@colyseus/core";
 import { MapSchema } from "@colyseus/schema";
 import { PlayerState } from "../schema/PlayerState";
 import { LootState } from "../schema/LootState"; 
@@ -111,7 +111,7 @@ type QueuedAction =
     | { type: "ability", client: Client, data: any }
     | { type: "interact", client: Client };
 
-export class BaseRoom<T extends IBaseState> extends Room<T> {
+export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     public playerGrid = new SpatialGrid<PlayerState>(50);
     public enemyGrid = new SpatialGrid<EnemyState>(50);
     public sceneryGrid = new SpatialGrid<SceneryState>(50);
@@ -1806,11 +1806,9 @@ export class BaseRoom<T extends IBaseState> extends Room<T> {
         syncFamiliars(this);
     }
 
-   async onLeave(client: Client, consented: boolean) { 
+    async onLeave(client: Client, consented: boolean) { 
         const player = this.state.players.get(client.sessionId); 
-        if (!player) {
-            return; 
-        }
+        if (!player) return; 
 
         if (!consented) {
             try {

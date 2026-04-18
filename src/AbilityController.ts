@@ -1,11 +1,18 @@
-import { Client } from "colyseus";
 import { EnemyState, AfflictionState } from "./schema/EnemyState";
 import { SceneryState } from "./schema/SceneryState";
 import { ITEM_DB } from "./ItemDatabase";
-import { BaseRoom } from "./rooms/BaseRoom"; 
+import { BaseRoom, IBaseState } from "./rooms/BaseRoom"; 
 import { getSkillDef } from "./data/AbilityDatabase";
 
 import { checkTownCollision, checkDynamicCollision, distToSegmentSquared } from "./game/CollisionSystem";
+
+// ==========================================
+// 0.17 CLIENT ABSTRACTION
+// ==========================================
+export type RoomClient = {
+    sessionId: string;
+    send: (type: string, message?: any) => void;
+};
 
 // ==========================================
 // PERFORMANCE: FAST MATH HELPERS
@@ -43,12 +50,21 @@ export function applyAffliction(
 }
 
 // ==========================================
-// ABILITY DICTIONARY
+// SHARED TYPES & ABILITY DICTIONARY
 // ==========================================
 
-type AbilityContext = {
-    room: BaseRoom<any> & { scheduledEvents?: { executeAt: number, fn: () => void }[] }; 
-    client: Client;
+type ScheduledEvent = {
+    executeAt: number;
+    fn: () => void;
+};
+
+export type RoomWithState = BaseRoom<IBaseState> & {
+    scheduledEvents?: ScheduledEvent[];
+};
+
+export type AbilityContext = {
+    room: RoomWithState; 
+    client: RoomClient;
     message: any;
     player: any;
     rank: (upgradeId: string) => number;
@@ -1552,123 +1568,6 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
         });
 
         room.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "wrath_of_the_berserker", targetX: player.x, targetZ: player.y });
-    },
-
-    // ------------------------------------------
-    // NATURE ESSENCE
-    // ------------------------------------------
-    spirit_animal: ({ room, player, rank, now }) => {
-        const packRank = rank("pack_leader");
-        
-        let baseSpd = 12.0;
-        [player.equippedItem, player.equipHead, player.equipChest, player.equipLegs, player.equipFeet, player.equipOffHand].forEach(n => {
-            if (n && ITEM_DB[n]?.stats?.spd) baseSpd += ITEM_DB[n].stats.spd;
-        });
-        player.movementSpeed = baseSpd + 10.0; 
-
-        room.activeHazards.push({
-            type: "spirit_animal", id: `spirit_${now}`, ownerId: player.sessionId,
-            x: player.x, y: player.y, timer: 5.0, rank: packRank, customData: { tickTimer: 0.5 }
-        });
-
-        room.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "spirit_animal", targetX: player.x, targetZ: player.y });
-    },
-
-    earth_spike: ({ room, client, player, rank, targetX, targetZ, now }) => {
-        const jaggedRank = rank("jagged_stone");
-        const hitRadiusSq = 6.25; // 2.5^2
-        let hitAnyone = false;
-        const batchEvents: any[] = [];
-
-        for (const enemy of room.enemyGrid.getNearby(targetX, targetZ, 2.5)) {
-            if (distSq(enemy.x, enemy.y, targetX, targetZ) <= hitRadiusSq) {
-                enemy.hp -= 60;
-                enemy.rootedTimer = Math.max(enemy.rootedTimer, 3.0);
-                hitAnyone = true;
-                
-                batchEvents.push({ id: enemy.id, targetX: enemy.x, targetZ: enemy.y, damage: 60, isCrit: true });
-                if (enemy.hp <= 0) { 
-                    room.awardPlayerKill(player); 
-                    room.removeEnemy(enemy.id); 
-                }
-            }
-        }
-        if (batchEvents.length > 0) room.broadcastNearby(targetX, targetZ, 50, "combat_batch", batchEvents);
-
-        if (jaggedRank >= 2 && hitAnyone) {
-            (player as any).tempShield = ((player as any).tempShield || 0) + 50;
-        }
-
-        if (jaggedRank >= 3) {
-            let extraHits = 0;
-            const extraBatch: any[] = [];
-            for (const enemy of room.enemyGrid.getNearby(targetX, targetZ, 8.0)) {
-                if (extraHits >= 3) break;
-                const dSq = distSq(enemy.x, enemy.y, targetX, targetZ);
-                if (dSq > hitRadiusSq && dSq <= 64.0) {
-                    enemy.hp -= 40;
-                    extraBatch.push({ id: enemy.id, targetX: enemy.x, targetZ: enemy.y, damage: 40, isCrit: false });
-                    if (enemy.hp <= 0) { 
-                        room.awardPlayerKill(player); 
-                        room.removeEnemy(enemy.id); 
-                    }
-                    extraHits++;
-                }
-            }
-            if (extraBatch.length > 0) room.broadcastNearby(targetX, targetZ, 50, "combat_batch", extraBatch);
-        }
-
-        if (jaggedRank >= 1) {
-            room.activeHazards.push({
-                type: "jagged_stone", id: `jagged_${now}`, ownerId: player.sessionId,
-                x: targetX, y: targetZ, timer: 10.0, rank: jaggedRank, customData: { tickTimer: 1.0, radius: 4.0 }
-            });
-        }
-        
-        room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "earth_spike", targetX, targetZ });
-    },
-
-    healing_blossom: ({ room, client, player, rank, targetX, targetZ, now }) => {
-        const bountyRank = rank("natures_bounty");
-        
-        if (bountyRank >= 1) {
-            for (const p of room.playerGrid.getNearby(targetX, targetZ, 5.0)) {
-                if (distSq(p.x, p.y, targetX, targetZ) <= 25.0) p.isSleeping = false; 
-            }
-        }
-
-        room.activeHazards.push({
-            type: "healing_blossom", id: `blossom_${now}`, ownerId: player.sessionId,
-            x: targetX, y: targetZ, timer: 6.0, rank: bountyRank, customData: { tickTimer: 1.0, radius: 5.0 }
-        });
-        
-        room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "healing_blossom", targetX, targetZ });
-    },
-
-    wrath_of_the_forest: ({ room, client, player, rank, targetX, targetZ, now }) => {
-        const treeRank = rank("world_tree");
-        const hitRadiusSq = 100.0; // 10.0^2
-
-        for (const enemy of room.enemyGrid.getNearby(targetX, targetZ, 10.0)) {
-            if (distSq(enemy.x, enemy.y, targetX, targetZ) <= hitRadiusSq) {
-                enemy.rootedTimer = Math.max(enemy.rootedTimer, 4.0);
-            }
-        }
-        
-        if (treeRank >= 2) {
-            for (const p of room.playerGrid.getNearby(targetX, targetZ, 10.0)) {
-                if (distSq(p.x, p.y, targetX, targetZ) <= hitRadiusSq) {
-                    p.hp = Math.min(p.maxHp, p.hp + (p.maxHp * 0.2));
-                }
-            }
-        }
-
-        room.activeHazards.push({
-            type: "wrath_of_the_forest", id: `wrath_forest_${now}`, ownerId: player.sessionId,
-            x: targetX, y: targetZ, timer: 10.0, rank: treeRank, customData: { tickTimer: 1.0, radius: 10.0 }
-        });
-        
-        room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "wrath_of_the_forest", targetX, targetZ });
     }
 };
 
@@ -1676,7 +1575,7 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
 // MAIN EXPORT CONTROLLER
 // ==========================================
 
-export function handleAbility(room: BaseRoom<any> & { scheduledEvents?: any[] }, client: Client, message: any) { 
+export function handleAbility(room: RoomWithState, client: RoomClient, message: any) { 
     const player = room.state.players.get(client.sessionId);
     if (!player || player.isSleeping) return;
 

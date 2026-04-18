@@ -468,18 +468,45 @@ export class TownRoom extends BaseRoom<TownState> {
         }
     }
 
-    async onLeave(client: Client, consented: boolean) {
-        console.log(`[TownRoom] 🚪 Client ${client.sessionId} LEFT. Graceful exit? ${consented}`);
+    async onDrop(client: Client, code: number) {
+        console.log(`[TownRoom] ⚠️ UNGRACEFUL DISCONNECT: Client ${client.sessionId} dropped. (Code: ${code})`);
         
-        if (!consented) {
-            console.warn(`[TownRoom] ⚠️ UNGRACEFUL DISCONNECT: The client crashed, lost internet, or choked on the network payload.`);
+        try {
+            await this.allowReconnection(client, 15);
+            (this as any).onClientReconnected?.(client);
+            console.log(`[TownRoom] 🔄 Client ${client.sessionId} reconnected successfully.`);
+            return;
+        } catch (e) {
+            console.warn(`[TownRoom] ⏳ Reconnection window expired for ${client.sessionId}`);
         }
 
+        // Final cleanup if reconnection window fails
+        await this.finalizeClientLeave(client);
+    }
+
+    async onLeave(client: Client, code?: number) {
+        console.log(`[TownRoom] 🚪 Client ${client.sessionId} LEFT gracefully. (Code: ${code})`);
+        await this.finalizeClientLeave(client);
+    }
+
+    protected async finalizeClientLeave(client: Client) {
+        const player = this.state.players.get(client.sessionId);
+        if (!player) return;
+
         try {
-            await super.onLeave(client, consented);
+            // Forward the updated leave event to BaseRoom for core state cleanup
+            // (Assuming BaseRoom has also been updated to accept code?: number)
+            if (typeof super.onLeave === "function") {
+                await super.onLeave(client, 0); 
+            }
         } catch (err) {
-            console.error(`[TownRoom] ❌ Error during onLeave for ${client.sessionId}:`, err);
+            console.error(`[TownRoom] ❌ Error during BaseRoom cleanup for ${client.sessionId}:`, err);
         }
+
+        // save to DB
+        // remove from grids
+        // remove from state
+        // clean teams/familiars/etc
     }
 
     onDispose() {
