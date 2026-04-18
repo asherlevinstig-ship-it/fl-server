@@ -101,4 +101,9 @@ export class MazeRoom extends BaseRoom<TownState> {
         const remainingSeconds = Math.floor(remainingMs / 1000);
         client.send("maze_timer_sync", { remainingSeconds });
     }
+
+    // UPDATED: New Colyseus signature handling the disconnect code properly
+    async onLeave(client: Client, code?: number) {
+        await super.onLeave(client, code);
+    }
 }

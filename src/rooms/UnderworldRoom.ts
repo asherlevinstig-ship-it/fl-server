@@ -100,6 +100,12 @@ export class UnderworldRoom extends BaseRoom<TownState> {
         }
     }
 
+    // UPDATED: Standardized Colyseus signature forwarding the disconnect code
+    async onLeave(client: Client, code?: number) {
+        // Forward the disconnect code up to the BaseRoom for core state cleanup
+        await super.onLeave(client, code);
+    }
+
     private handlePlayerDeath(victim: any, killer: any | null) {
         // Unlock falling state
         (victim as any).isFalling = false;
