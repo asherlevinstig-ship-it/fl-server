@@ -1,4 +1,4 @@
-import { Room, Client } from "@colyseus/core";
+import { Room, Client, CloseCode } from "@colyseus/core";
 import { MapSchema } from "@colyseus/schema";
 import { PlayerState } from "../schema/PlayerState";
 import { LootState } from "../schema/LootState"; 
@@ -112,6 +112,7 @@ type QueuedAction =
     | { type: "interact", client: Client };
 
 export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
+    public state!: T; // Satisfies strict external controller typings
     public playerGrid = new SpatialGrid<PlayerState>(50);
     public enemyGrid = new SpatialGrid<EnemyState>(50);
     public sceneryGrid = new SpatialGrid<SceneryState>(50);
@@ -1806,17 +1807,22 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         syncFamiliars(this);
     }
 
-    async onLeave(client: Client, consented: boolean) { 
+    // UPDATED: Use code?: number instead of consented: boolean
+    async onLeave(client: Client, code?: number) { 
+        // We can still determine if they consented by checking the code!
+        const consented = (code === CloseCode.CONSENTED);
+        
         const player = this.state.players.get(client.sessionId); 
         if (!player) return; 
 
         if (!consented) {
             try {
+                // Wait for the player to reconnect
                 client = await this.allowReconnection(client, 15);
                 this.onClientReconnected(client);
                 return; 
             } catch (e) {
-                // Time out reached
+                // Time out reached, proceed with full disconnect
             }
         }
 
@@ -2647,7 +2653,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
                                 if ((enemy as any).bloodExplosionOnDeath) {
                                     for (const p of this.playerGrid.getNearby(enemy.x, enemy.y, 8.0)) {
-                                        if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) {
+                                        if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) { // 8^2
                                             p.hp = Math.min(p.maxHp, p.hp + 50);
                                         }
                                     }

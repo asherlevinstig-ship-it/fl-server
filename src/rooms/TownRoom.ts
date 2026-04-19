@@ -468,8 +468,8 @@ export class TownRoom extends BaseRoom<TownState> {
         }
     }
 
-    // UPDATED: Now passes code to finalizeClientLeave
-    async onDrop(client: Client, code: number) {
+    // UPDATED: Standardized signature for disconnects using code?: number
+    async onDrop(client: Client, code?: number) {
         console.log(`[TownRoom] ⚠️ UNGRACEFUL DISCONNECT: Client ${client.sessionId} dropped. (Code: ${code})`);
         
         try {
@@ -485,19 +485,19 @@ export class TownRoom extends BaseRoom<TownState> {
         await this.finalizeClientLeave(client, code);
     }
 
-    // UPDATED: Standardized signature
+    // UPDATED: Standardized signature matching BaseRoom using code?: number
     async onLeave(client: Client, code?: number) {
         console.log(`[TownRoom] 🚪 Client ${client.sessionId} LEFT gracefully. (Code: ${code})`);
         await this.finalizeClientLeave(client, code);
     }
 
-    // UPDATED: Accepts code to forward upward
+    // UPDATED: Forwards the code properly
     protected async finalizeClientLeave(client: Client, code?: number) {
         const player = this.state.players.get(client.sessionId);
         if (!player) return;
 
         try {
-            // Forward the updated leave event to BaseRoom for core state cleanup
+            // Forward the leave event to BaseRoom for core state cleanup
             if (typeof super.onLeave === "function") {
                 await super.onLeave(client, code); 
             }
