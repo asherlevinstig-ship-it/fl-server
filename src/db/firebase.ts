@@ -2,23 +2,53 @@ import * as admin from "firebase-admin";
 import * as dotenv from "dotenv";
 
 dotenv.config();
-
-try {
+console.log("🔥 NEW FIREBASE BUILD ACTIVE");
+function loadFirebaseServiceAccount(): admin.ServiceAccount {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
 
   if (!raw) {
     throw new Error("Missing FIREBASE_SERVICE_ACCOUNT environment variable.");
   }
 
-  // Parse the JSON string from env
-  const serviceAccount = JSON.parse(raw);
+  let parsed: {
+    project_id?: string;
+    client_email?: string;
+    private_key?: string;
+    [key: string]: any;
+  };
 
-  // Fix for escaped newlines in private key (VERY IMPORTANT)
-  if (serviceAccount.private_key) {
-    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+  try {
+    parsed = JSON.parse(raw);
+  } catch (parseError) {
+    throw new Error(
+      `FIREBASE_SERVICE_ACCOUNT is not valid JSON: ${
+        parseError instanceof Error ? parseError.message : String(parseError)
+      }`
+    );
   }
 
-  // Prevent re-initialisation (important for dev + hot reload)
+  if (!parsed.project_id) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT is missing project_id.");
+  }
+
+  if (!parsed.client_email) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT is missing client_email.");
+  }
+
+  if (!parsed.private_key) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT is missing private_key.");
+  }
+
+  return {
+    projectId: parsed.project_id,
+    clientEmail: parsed.client_email,
+    privateKey: parsed.private_key.replace(/\\n/g, "\n")
+  };
+}
+
+try {
+  const serviceAccount = loadFirebaseServiceAccount();
+
   if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
