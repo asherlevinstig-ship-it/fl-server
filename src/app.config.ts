@@ -79,21 +79,21 @@ export default config({
     });
   },
 
-initializeExpress: (app) => {
-    // 1. Lock down CORS to only your local machine and your live Vercel app
+  initializeExpress: (app) => {
+    // 1. The Bulletproof CORS configuration
     app.use(cors({
-      origin: [
-        "http://localhost:5173", // Make sure this matches your local Vite port
-        "https://fl-client-rose.vercel.app" // Your live game URL
-      ],
-      methods: ["GET", "POST", "OPTIONS"],
-      credentials: true
+      origin: "*", // Accept requests from any domain (Vercel, Localhost, etc.)
+      methods: ["GET", "POST", "OPTIONS", "PUT", "DELETE"],
+      allowedHeaders: ["Content-Type", "Authorization", "Accept"]
     }));
 
-    // 2. Parse JSON bodies (Must be after CORS!)
+    // 2. Explicitly intercept and approve all preflight requests
+    app.options('*', cors());
+
+    // 3. Parse JSON bodies (Must remain AFTER the CORS block)
     app.use(express.json());
     
-    // 3. Register your Auth routes
+    // 4. Register your Auth routes
     app.use("/api", authRoutes);
   },
 
