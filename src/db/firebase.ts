@@ -2,7 +2,7 @@ import * as admin from "firebase-admin";
 import * as dotenv from "dotenv";
 
 dotenv.config();
-console.log("🔥 NEW FIREBASE BUILD ACTIVE");
+console.log("🔥 NEW FIREBASE BUILD ACTIVEeeee");
 function loadFirebaseServiceAccount(): admin.ServiceAccount {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
 
