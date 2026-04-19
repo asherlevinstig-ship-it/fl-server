@@ -3,8 +3,11 @@ import express from "express";
 import cors from "cors";
 import authRoutes from "./auth";
 
+// --- CRITICAL FIX 1: INCREASE NETWORK BUFFER TO PREVENT STATE CORRUPTION ---
+import { Encoder } from "@colyseus/schema";
+Encoder.BUFFER_SIZE = 2048 * 1024; // Increased to 2MB to handle massive town states
+
 // Temporary TS workaround for Colyseus 0.17 export typing mismatch
-// The official docs still show matchMaker coming from "colyseus".
 const { matchMaker } = require("colyseus") as { matchMaker: any };
 
 // --- ROOM IMPORTS ---
@@ -12,7 +15,6 @@ import { TownRoom } from "./rooms/TownRoom";
 import { MazeRoom } from "./rooms/MazeRoom";
 import { UnderworldRoom } from "./rooms/UnderworldRoom";
 import { BaseRoom } from "./rooms/BaseRoom";
-// import { FloorFieldRoom } from "./rooms/FloorFieldRoom";
 import { DungeonRoom } from "./rooms/DungeonRoom";
 
 // --- DATABASE ---
@@ -44,11 +46,14 @@ export default config({
 
       try {
         await matchMaker.createRoom(activeEventZone, {});
+        
+        // --- CRITICAL FIX 2: Safe broadcasting for remote room calls ---
         const activeRooms = await matchMaker.query({});
-
         for (const room of activeRooms) {
           if (room.name !== "maze" && room.name !== "underworld" && room.name !== "dungeon") {
-            await matchMaker.remoteRoomCall(room.roomId, "triggerEventPull", [activeEventZone]);
+            try {
+                await matchMaker.remoteRoomCall(room.roomId, "triggerEventPull", [activeEventZone]);
+            } catch (e) {} // Failsafe if room closed during iteration
           }
         }
       } catch (err) {
@@ -64,10 +69,12 @@ export default config({
       try {
         const activeRooms = await matchMaker.query({});
         for (const room of activeRooms) {
-          await matchMaker.remoteRoomCall(room.roomId, "syncGlobalEvent", [
-            BaseRoom.nextEventName,
-            BaseRoom.nextEventTime
-          ]);
+          try {
+              await matchMaker.remoteRoomCall(room.roomId, "syncGlobalEvent", [
+                BaseRoom.nextEventName,
+                BaseRoom.nextEventTime
+              ]);
+          } catch (e) {} // Failsafe if room closed during iteration
         }
       } catch (err) {
         console.error("❌ Failed to sync new event timer:", err);
