@@ -1,28 +1,29 @@
 import * as admin from "firebase-admin";
 import * as dotenv from "dotenv";
-import * as fs from "fs";
-import * as path from "path";
 
 dotenv.config();
 
 try {
-  const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-  if (!credentialsPath) {
-    throw new Error("Missing GOOGLE_APPLICATION_CREDENTIALS environment variable.");
+  if (!raw) {
+    throw new Error("Missing FIREBASE_SERVICE_ACCOUNT environment variable.");
   }
 
-  const absolutePath = path.resolve(credentialsPath);
+  // Parse the JSON string from env
+  const serviceAccount = JSON.parse(raw);
 
-  if (!fs.existsSync(absolutePath)) {
-    throw new Error(`Service account file not found at: ${absolutePath}`);
+  // Fix for escaped newlines in private key (VERY IMPORTANT)
+  if (serviceAccount.private_key) {
+    serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
   }
 
-  const serviceAccount = JSON.parse(fs.readFileSync(absolutePath, "utf8"));
-
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
+  // Prevent re-initialisation (important for dev + hot reload)
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+  }
 
   console.log("🔥 Firebase Admin initialized successfully.");
 } catch (error) {
