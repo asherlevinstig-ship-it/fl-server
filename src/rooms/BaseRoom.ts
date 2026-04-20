@@ -225,7 +225,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     }
 
     public awardPlayerKill(player: PlayerState, victimName?: string) {
-        // COINS REMOVED HERE: Replaced by Physical Diablo Coin Drops
         player.experience += 100;
 
         if (player.experience >= player.experienceToNextLevel) {
@@ -288,8 +287,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (!this.state.enemies) return;
         const enemy = this.state.enemies.get(enemyId);
         if (enemy) {
-            // 🔥 PHYSICAL COIN DROP
-            this.spawnDrop(enemy.x, enemy.y, "Coin_15"); 
+            // 🔥 DIABLO COIN DROP
+            this.spawnDrop(enemy.x, enemy.y, "Coin_15");
 
             if (Math.random() > 0.7) {
                 const drops = ["Minor Health Potion", "Crispy Apple", "Iron Sword", "Leather Boots", "Silk Bandana", "Mana Vial", "Bronze-Forged Battleaxe"];
@@ -688,13 +687,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             else if (def.equipSlot === "offhand") p.equipOffHand = (p.equipOffHand === message.itemName) ? "" : message.itemName;
             else if (def.type !== "armor" && def.type !== "cosmetic") p.equippedItem = (p.equippedItem === message.itemName) ? "" : message.itemName;
             
-            let bonusSpd = 0;
-            [p.equippedItem, p.equipHead, p.equipChest, p.equipBack, p.equipLegs, p.equipFeet, p.equipOffHand].forEach(n => {
-                if (n) bonusSpd += ITEM_DB[n]?.stats?.spd ?? 0;
-            });
-
-            if ((p as any).holySpeedBuff && Date.now() < (p as any).holySpeedBuff) bonusSpd += 2.4; 
-            p.movementSpeed = 12.0 + bonusSpd;
+            // Note: movementSpeed is now dynamically calculated in universalUpdate
             this.markPlayerDirty(client.sessionId);
         });
 
@@ -1348,13 +1341,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             if ((player as any).stealthedUntil && Date.now() < (player as any).stealthedUntil) {
                 brokeStealth = true;
                 (player as any).stealthedUntil = 0;
-                
-                let baseSpd = 12.0;
-                [player.equippedItem, player.equipHead, player.equipChest, player.equipBack, player.equipLegs, player.equipFeet, player.equipOffHand].forEach(n => {
-                    if (n) baseSpd += ITEM_DB[n]?.stats?.spd ?? 0;
-                });
-                if ((player as any).holySpeedBuff && Date.now() < (player as any).holySpeedBuff) baseSpd += 2.4; 
-                player.movementSpeed = baseSpd;
 
                 const hIdx = this.activeHazards.findIndex(h => h.type === "veil_of_shadows" && h.ownerId === player.sessionId);
                 if (hIdx !== -1) {
@@ -1920,28 +1906,45 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (player.hp < player.maxHp) player.hp = Math.min(player.hp + 0.5 * dt, player.maxHp);
                     if (player.mp < player.maxMp && !player.isAuraActive) player.mp = Math.min(player.mp + 2.0 * dt, player.maxMp);
                 }
-                else if (player.hunger <= 0) {
-                    player.hp -= 0.5 * dt;
-                    if (player.hp <= 0) {
-                        player.hp = player.maxHp; player.hunger = player.maxHunger;
-                        
-                        const isUnderworld = this.roomName === "underworld" || this.constructor.name === "UnderworldRoom";
-                        const client = this.clients.find(c => c.sessionId === sessionId);
-                        
-                        if (!isUnderworld) {
-                            if (client) {
-                                client.send("close_all_ui");
-                                client.send("server_event_teleport", { zone: "underworld" });
-                            }
-                        } else {
-                            const oldX = player.x; const oldY = player.y; player.x = 0; player.y = 20;
-                            this.playerGrid.update(player, oldX, oldY, player.x, player.y);
-                            if (client) {
-                                client.send("close_all_ui");
-                                client.send("forcePosition", { x: player.x, z: player.y });
-                            }
-                        }
+
+                // --- NEW: DYNAMIC MOVEMENT SPEED & STARVATION PENALTY ---
+                let currentSpeed = 12.0;
+                
+                // Add up all speed bonuses from equipped armor/weapons
+                [player.equippedItem, player.equipHead, player.equipChest, player.equipBack, player.equipLegs, player.equipFeet, player.equipOffHand].forEach(n => {
+                    if (n && ITEM_DB[n]?.stats?.spd) currentSpeed += ITEM_DB[n].stats.spd;
+                });
+                
+                // Apply temporary buffs
+                if ((player as any).holySpeedBuff && Date.now() < (player as any).holySpeedBuff) currentSpeed += 2.4; 
+                
+                // Check for Whirlwind Aura
+                let hasWhirlwind = false;
+                for (const h of this.activeHazards) {
+                    if (h.type === "whirlwind_aura" && h.ownerId === sessionId && h.rank >= 1) {
+                        hasWhirlwind = true; break;
                     }
+                }
+                if (hasWhirlwind) currentSpeed *= 1.5;
+
+                // 🔥 The Starvation Penalty
+                if (player.hunger <= 0) {
+                    currentSpeed *= 0.4; // Slow player down to 40% of their total speed
+                    
+                    // Send a warning to the UI once when starvation begins
+                    if (!(player as any).isStarvingMsgSent) {
+                        (player as any).isStarvingMsgSent = true;
+                        const client = this.clients.find(c => c.sessionId === sessionId);
+                        if (client) client.send("hud_message", "⚠️ You are starving. Movement speed severely reduced.");
+                    }
+                } else if ((player as any).isStarvingMsgSent) {
+                    // Reset the warning flag once they eat
+                    (player as any).isStarvingMsgSent = false;
+                }
+
+                // Only update the network state if their speed actually changed to save bandwidth
+                if (player.movementSpeed !== currentSpeed) {
+                    player.movementSpeed = currentSpeed;
                 }
             }
         });
@@ -2071,12 +2074,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
                 if (h.timer <= 0) {
                     (owner as any).stealthedUntil = 0;
-                    let baseSpd = 12.0;
-                    [owner.equippedItem, owner.equipHead, owner.equipChest, owner.equipBack, owner.equipLegs, owner.equipFeet, owner.equipOffHand].forEach(n => {
-                        if (n && ITEM_DB[n]?.stats?.spd) baseSpd += ITEM_DB[n].stats.spd;
-                    });
-                    owner.movementSpeed = baseSpd;
-
+                    
+                    // We only clear the stealth state here, universalUpdate handles speed calculation now.
                     const breakVisual = h.rank >= 3 ? "veil_of_shadows_burst" : "veil_of_shadows_break";
                     this.broadcastNearby(owner.x, owner.y, 50, "abilityUsed", { id: h.ownerId, abilityId: breakVisual, targetX: owner.x, targetZ: owner.y });
 
@@ -2216,14 +2215,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             else if (h.type === "whirlwind_aura" && owner) {
                 h.x = owner.x; h.y = owner.y; h.customData.tickTimer -= dt;
 
-                if (h.rank >= 1) {
-                    let baseSpd = 12.0;
-                    [owner.equippedItem, owner.equipHead, owner.equipChest, owner.equipBack, owner.equipLegs, owner.equipFeet, owner.equipOffHand].forEach(n => {
-                        if (n && ITEM_DB[n]?.stats?.spd) baseSpd += ITEM_DB[n].stats.spd;
-                    });
-                    owner.movementSpeed = baseSpd * 1.5; 
-                }
-
                 if (h.customData.tickTimer <= 0 && this.state.enemies) {
                     h.customData.tickTimer = 0.5;
                     const hitRadius = 5.0;
@@ -2247,11 +2238,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
 
                 if (h.timer <= 0) {
-                    let baseSpd = 12.0;
-                    [owner.equippedItem, owner.equipHead, owner.equipChest, owner.equipBack, owner.equipLegs, owner.equipFeet, owner.equipOffHand].forEach(n => {
-                        if (n && ITEM_DB[n]?.stats?.spd) baseSpd += ITEM_DB[n].stats.spd;
-                    });
-                    owner.movementSpeed = baseSpd;
                     (owner as any).windBarrierUntil = 0; 
                     this.broadcastNearby(owner.x, owner.y, 50, "abilityUsed", { id: h.ownerId, abilityId: "whirlwind_end", targetX: owner.x, targetZ: owner.y });
                     removeHazardSync(i);
@@ -2476,12 +2462,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
                 if (h.timer <= 0) {
                     owner.isSpiritAnimal = false;
-                    let baseSpd = 12.0;
-                    [owner.equippedItem, owner.equipHead, owner.equipChest, owner.equipBack, owner.equipLegs, owner.equipFeet, owner.equipOffHand].forEach(n => {
-                        if (n && ITEM_DB[n]?.stats?.spd) baseSpd += ITEM_DB[n].stats.spd;
-                    });
-                    owner.movementSpeed = baseSpd;
-
                     this.broadcastNearby(owner.x, owner.y, 60, "abilityUsed", { id: owner.sessionId, abilityId: "spirit_animal_end", targetX: owner.x, targetZ: owner.y });
 
                     if (h.rank >= 3 && this.state.enemies) {
