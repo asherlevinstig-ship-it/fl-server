@@ -147,6 +147,10 @@ export class UnderworldRoom extends BaseRoom<TownState> {
         // Unlock falling state
         (victim as any).isFalling = false;
 
+        // Cache death location for dropping coins BEFORE resetting coordinates
+        const deathX = victim.x;
+        const deathZ = victim.y;
+
         // Reset the Victim to Town Spawn coordinates
         const oldX = victim.x;
         const oldY = victim.y;
@@ -168,12 +172,16 @@ export class UnderworldRoom extends BaseRoom<TownState> {
         const victimClient = this.clients.find(c => c.sessionId === victim.sessionId);
         if (victimClient) {
             victimClient.send("forcePosition", { x: victim.x, z: victim.y });
-            victimClient.send("underworld_death", { message: "💀 The Void consumed you. You lost your items." });
+            victimClient.send("underworld_death", { message: "💀 The Void consumed you. You lost your items and a Level." });
         }
 
         // --- VICTOR REWARDS & ESCAPE ---
         if (killer) {
-            killer.coins += 5000;
+            // 💥 DIABLO-STYLE LOOT EXPLOSION
+            for(let i = 0; i < 5; i++) {
+                (this as any).spawnDrop(deathX + (Math.random()-0.5)*3, deathZ + (Math.random()-0.5)*3, "Coin_1000");
+            }
+
             killer.experience += 2000;
             
             // Reset the Killer to Town Spawn coordinates so they don't fall off upon loading town

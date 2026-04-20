@@ -225,7 +225,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     }
 
     public awardPlayerKill(player: PlayerState, victimName?: string) {
-        player.coins += 15;
+        // COINS REMOVED HERE: Replaced by Physical Diablo Coin Drops
         player.experience += 100;
 
         if (player.experience >= player.experienceToNextLevel) {
@@ -288,6 +288,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (!this.state.enemies) return;
         const enemy = this.state.enemies.get(enemyId);
         if (enemy) {
+            // 🔥 PHYSICAL COIN DROP
+            this.spawnDrop(enemy.x, enemy.y, "Coin_15"); 
+
             if (Math.random() > 0.7) {
                 const drops = ["Minor Health Potion", "Crispy Apple", "Iron Sword", "Leather Boots", "Silk Bandana", "Mana Vial", "Bronze-Forged Battleaxe"];
                 const dropName = drops[Math.floor(Math.random() * drops.length)];
@@ -1571,6 +1574,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (!player || player.isSleeping || player.isMeditating) return;
 
         for (const [id, loot] of this.state.lootItems.entries()) {
+            // Diablo Coin handling is done automatically via spatial lookup now. 
+            // We skip manual interactions with coins here to avoid double pickups.
+            if (loot.kind.startsWith("Coin_")) continue;
+
             if (distSq(player.x, player.y, loot.x, loot.y) <= 4.0) { // 2^2
                 if (loot.kind === "chest" && !loot.isOpen) {
                     loot.isOpen = true;
@@ -1938,6 +1945,24 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
             }
         });
+
+        // --- NEW: AUTO-PICKUP COINS ---
+        for (const [id, loot] of this.state.lootItems.entries()) {
+            if (loot.kind.startsWith("Coin_")) {
+                for (const p of this.playerGrid.getNearby(loot.x, loot.y, 2.0)) {
+                    if (!p.isSleeping && !p.isMeditating && distSq(p.x, p.y, loot.x, loot.y) <= 4.0) {
+                        const amount = parseInt(loot.kind.split("_")[1]) || 15;
+                        p.coins += amount;
+                        this.markPlayerDirty(p.sessionId);
+                        this.state.lootItems.delete(id);
+                        
+                        const client = this.clients.find(c => c.sessionId === p.sessionId);
+                        if (client) client.send("coin_pickup", { amount });
+                        break; // Picked up, stop checking
+                    }
+                }
+            }
+        }
 
         // --- 2. HAZARDS ---
         const removeHazardSync = (index: number) => {
