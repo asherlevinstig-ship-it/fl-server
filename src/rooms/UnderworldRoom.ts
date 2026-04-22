@@ -121,7 +121,7 @@ export class UnderworldRoom extends BaseRoom<TownState> {
         }
     }
 
-    async onJoin(client: Client, options: any) {
+   async onJoin(client: Client, options: any) {
         await super.onJoin(client, options);
         
         const player = this.state.players.get(client.sessionId);
@@ -133,8 +133,16 @@ export class UnderworldRoom extends BaseRoom<TownState> {
             player.x = 0;
             player.y = 35; 
             
+            // Restore Vitals to FULL
+            player.hp = player.maxHp;
+            player.mp = player.maxMp;
+            player.hunger = player.maxHunger;
+            
             this.playerGrid.update(player, oldX, oldY, player.x, player.y);
             client.send("forcePosition", { x: player.x, z: player.y });
+            
+            // Ensure the server saves these restored vitals to the database
+            (this as any).markPlayerDirty(client.sessionId);
         }
     }
 
