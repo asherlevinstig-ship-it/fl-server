@@ -1,6 +1,6 @@
 import { Room, Client, CloseCode } from "@colyseus/core";
-import { MapSchema } from "@colyseus/schema";
-import { PlayerState } from "../schema/PlayerState";
+import { MapSchema, ArraySchema } from "@colyseus/schema";
+import { PlayerState, QuestProgressState } from "../schema/PlayerState";
 import { LootState } from "../schema/LootState"; 
 import { ActiveAbility, SkillUpgrade } from "../schema/SkillState";
 import { InventoryItemState } from "../schema/InventoryItemState";
@@ -11,6 +11,7 @@ import { DecorationState } from "../schema/DecorationState";
 import { StoreState } from "../schema/StoreState";
 import { FamiliarState } from "../schema/FamiliarState";
 import { ITEM_DB } from "../ItemDatabase";
+import { QUEST_DB } from "../QuestDatabase";
 import { db } from "../db/firebase";
 
 import { getSkillDef, getAbilityCategory } from "../data/AbilityDatabase";
@@ -224,6 +225,61 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
+    // --- NEW: QUEST HELPER ENGINE ---
+    public progressQuest(player: PlayerState, type: string, targetId: string, amount: number, client: Client | undefined) {
+        if (!client) return;
+        player.activeQuests.forEach((qProgress, qId) => {
+            const qDef = QUEST_DB[qId];
+            if (!qDef) return;
+
+            const obj = qDef.objectives.find(o => o.type === type && o.targetId === targetId);
+            if (obj && !qProgress.isCompleted) {
+                qProgress.currentAmount += amount;
+                
+                if (qProgress.currentAmount >= obj.requiredAmount) {
+                    qProgress.currentAmount = obj.requiredAmount;
+                    qProgress.isCompleted = true;
+                    
+                    player.coins += qDef.rewards.coins;
+                    player.experience += qDef.rewards.exp;
+                    
+                    // Check level up from quest exp
+                    if (player.experience >= player.experienceToNextLevel) {
+                        player.experience -= player.experienceToNextLevel;
+                        player.level += 1;
+                        player.experienceToNextLevel = Math.floor(player.experienceToNextLevel * 1.5);
+                        player.skillTree.unspentAwakeningPoints += 1;
+                        player.maxHp += 10; player.hp = player.maxHp;
+                        player.maxMp += 10; player.mp = player.maxMp;
+                        player.maxStamina += 10; player.stamina = player.maxStamina;
+                        player.maxHunger += 10; player.hunger = player.maxHunger;
+                    }
+                    
+                    player.completedQuests.push(qId);
+                    player.activeQuests.delete(qId);
+                    
+                    client.send("server_event_log", {
+                        html: `🏆 <b style="color: #ffaa00;">Quest Complete:</b> ${qDef.title} (+${qDef.rewards.coins} Coins)`,
+                        type: "event-win"
+                    });
+                    
+                    // Automatically chain next quest
+                    if (qDef.nextQuestId) {
+                        const nextQ = new QuestProgressState();
+                        nextQ.questId = qDef.nextQuestId;
+                        player.activeQuests.set(qDef.nextQuestId, nextQ);
+                        
+                        client.send("server_event_log", {
+                            html: `📜 <b style="color: #00ffaa;">New Quest:</b> ${QUEST_DB[qDef.nextQuestId].title}`,
+                            type: "event-info"
+                        });
+                    }
+                    this.markPlayerDirty(player.sessionId);
+                }
+            }
+        });
+    }
+
     public awardPlayerKill(player: PlayerState, victimName?: string) {
         player.experience += 100;
 
@@ -258,6 +314,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 html: `⚔️ <b>${player.name}</b> defeated <b>${victimName}</b>.`,
                 type: "event-kill"
             });
+
+            // Try to progress any 'kill' quests
+            const client = this.clients.find(c => c.sessionId === player.sessionId);
+            if (client) this.progressQuest(player, "kill", victimName, 1, client);
         }
 
         this.markPlayerDirty(player.sessionId);
@@ -1510,6 +1570,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                             this.spawnDrop(bestScenery.x + (Math.random() - 0.5) * 1.5, bestScenery.y + (Math.random() - 0.5) * 1.5, lootName); 
                         }
 
+                        // Try to progress any 'gather' quests
+                        this.progressQuest(player, "gather", isRock ? "Stone" : "Wood", 3, client); 
+
                         const originalScenery = new SceneryState();
                         originalScenery.id = bestScenery.id; originalScenery.kind = bestScenery.kind;
                         originalScenery.x = bestScenery.x; originalScenery.y = bestScenery.y;
@@ -1591,6 +1654,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     }
                     this.state.lootItems.delete(id);
                     this.markPlayerDirty(client.sessionId);
+                    
+                    this.progressQuest(player, "gather", lootName, 1, client);
+                    
                     break; 
                 }
             }
@@ -1620,6 +1686,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             a.upgrades.forEach((u, uk) => upgs[uk] = { id: u.id, unlocked: u.unlocked, currentRank: u.currentRank, maxRank: u.maxRank });
             abilities[k] = { id: a.id, baseLevel: a.baseLevel, rank: a.rank, level: a.level, proficiency: a.proficiency, unconsolidatedProficiency: a.unconsolidatedProficiency, upgrades: upgs };
         });
+
+        const savedActiveQuests: Record<string, any> = {};
+        p.activeQuests.forEach((q, k) => { savedActiveQuests[k] = { currentAmount: q.currentAmount, isCompleted: q.isCompleted }; });
+        const savedCompletedQuests = Array.from(p.completedQuests);
         
         try { 
             await db.collection("players").doc(p.name).set({ 
@@ -1630,7 +1700,12 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 manaLevel: p.manaLevel, auraStrength: p.auraStrength, auraControl: p.auraControl, auraStyle: p.auraStyle, meditationCount: p.meditationCount,
                 inventory: inv, equippedItem: p.equippedItem, equipHead: p.equipHead, equipChest: p.equipChest, equipBack: p.equipBack, equipLegs: p.equipLegs, equipFeet: p.equipFeet, equipOffHand: p.equipOffHand, 
                 skillTree: { unspentEssencePoints: p.skillTree.unspentEssencePoints, unspentAwakeningPoints: p.skillTree.unspentAwakeningPoints, unlockedPassives: passives, activeAbilities: abilities },
-                shadowSouls: (p as any).shadowSouls || 0
+                shadowSouls: (p as any).shadowSouls || 0,
+                activeQuests: savedActiveQuests,
+                completedQuests: savedCompletedQuests,
+                hasUnlockedAura: p.hasUnlockedAura,
+                hasUnlockedBuilding: p.hasUnlockedBuilding,
+                hasUnlockedSkillTree: p.hasUnlockedSkillTree
             }, { merge: true }); 
         } catch (err) {
             console.error("Failed to save player to DB:", err);
@@ -1670,93 +1745,79 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 
                 if (d.classId !== undefined) player.classId = d.classId;
                 if (d.pathwayId !== undefined) player.pathwayId = d.pathwayId;
-                
                 if (d.rank !== undefined) player.rank = d.rank;
                 if (d.level !== undefined) player.level = d.level;
                 if (d.experience !== undefined) player.experience = d.experience;
                 if (d.experienceToNextLevel !== undefined) player.experienceToNextLevel = d.experienceToNextLevel;
-
                 if (d.x !== undefined) player.x = d.x; if (d.y !== undefined) player.y = d.y; 
                 if (d.hp !== undefined) player.hp = d.hp; if (d.mp !== undefined) player.mp = d.mp; 
                 if (d.stamina !== undefined) player.stamina = d.stamina; if (d.maxStamina !== undefined) player.maxStamina = d.maxStamina;
                 if (d.hunger !== undefined) player.hunger = d.hunger; if (d.maxHunger !== undefined) player.maxHunger = d.maxHunger;
                 if (d.coins !== undefined) player.coins = d.coins;
-                
                 if (d.manaLevel !== undefined) player.manaLevel = d.manaLevel;
                 if (d.auraStrength !== undefined) player.auraStrength = d.auraStrength;
                 if (d.auraControl !== undefined) player.auraControl = d.auraControl;
                 if (d.auraStyle !== undefined) player.auraStyle = d.auraStyle;
                 if (d.meditationCount !== undefined) player.meditationCount = d.meditationCount;
                 if (d.shadowSouls !== undefined) (player as any).shadowSouls = d.shadowSouls;
-
+                if (d.hasUnlockedAura !== undefined) player.hasUnlockedAura = d.hasUnlockedAura;
+                if (d.hasUnlockedBuilding !== undefined) player.hasUnlockedBuilding = d.hasUnlockedBuilding;
+                if (d.hasUnlockedSkillTree !== undefined) player.hasUnlockedSkillTree = d.hasUnlockedSkillTree;
                 if (d.teamId !== undefined) player.teamId = d.teamId;
                 if (d.isTeamLeader !== undefined) player.isTeamLeader = d.isTeamLeader;
 
                 if (player.teamId > 0) {
                     if (!this.activeTeams.has(player.teamId)) {
-                        this.activeTeams.set(player.teamId, {
-                            leader: player.isTeamLeader ? client.sessionId : client.sessionId, 
-                            members: new Set([client.sessionId])
-                        });
+                        this.activeTeams.set(player.teamId, { leader: player.isTeamLeader ? client.sessionId : client.sessionId, members: new Set([client.sessionId]) });
                         player.isTeamLeader = true;
                     } else {
-                        const team = this.activeTeams.get(player.teamId)!;
-                        team.members.add(client.sessionId);
-                        if (player.isTeamLeader) {
-                            team.leader = client.sessionId;
-                        }
+                        const team = this.activeTeams.get(player.teamId)!; team.members.add(client.sessionId);
+                        if (player.isTeamLeader) team.leader = client.sessionId;
                     }
                 }
 
-                if (d.equippedItem !== undefined) { 
-                    const loaded = d.equippedItem; const def = ITEM_DB[loaded]; 
-                    player.equippedItem = (def?.type === "armor" || def?.type === "cosmetic") ? "" : loaded; 
-                }
-                
+                if (d.equippedItem !== undefined) { const loaded = d.equippedItem; const def = ITEM_DB[loaded]; player.equippedItem = (def?.type === "armor" || def?.type === "cosmetic") ? "" : loaded; }
                 if (d.equipHead !== undefined) player.equipHead = d.equipHead; if (d.equipChest !== undefined) player.equipChest = d.equipChest; 
                 if (d.equipBack !== undefined) player.equipBack = d.equipBack; if (d.equipLegs !== undefined) player.equipLegs = d.equipLegs; 
                 if (d.equipFeet !== undefined) player.equipFeet = d.equipFeet; if (d.equipOffHand !== undefined) player.equipOffHand = d.equipOffHand;
                 
-                if (d.inventory && Array.isArray(d.inventory)) {
-                    d.inventory.forEach((inv: any) => { 
-                        const item = new InventoryItemState(); 
-                        item.name = inv.name; item.quantity = inv.quantity; item.desc = inv.desc; 
-                        player.inventory.set(inv.name, item); 
-                    });
-                }
+                if (d.inventory && Array.isArray(d.inventory)) { d.inventory.forEach((inv: any) => { const item = new InventoryItemState(); item.name = inv.name; item.quantity = inv.quantity; item.desc = inv.desc; player.inventory.set(inv.name, item); }); }
                 
                 if (d.skillTree) {
-                    player.skillTree.unspentEssencePoints = d.skillTree.unspentEssencePoints || 0; 
-                    player.skillTree.unspentAwakeningPoints = d.skillTree.unspentAwakeningPoints || 0;
-                    if (d.skillTree.unlockedPassives) {
-                        for (const [k, v] of Object.entries(d.skillTree.unlockedPassives)) player.skillTree.unlockedPassives.set(k, v as number);
-                    }
+                    player.skillTree.unspentEssencePoints = d.skillTree.unspentEssencePoints || 0; player.skillTree.unspentAwakeningPoints = d.skillTree.unspentAwakeningPoints || 0;
+                    if (d.skillTree.unlockedPassives) { for (const [k, v] of Object.entries(d.skillTree.unlockedPassives)) player.skillTree.unlockedPassives.set(k, v as number); }
                     if (d.skillTree.activeAbilities) {
                         for (const [k, v] of Object.entries(d.skillTree.activeAbilities)) {
                             const data = v as any; const ability = new ActiveAbility(); 
-                            ability.id = data.id; ability.baseLevel = data.baseLevel;
-                            ability.rank = data.rank || "Iron"; ability.level = data.level || 0;
-                            ability.proficiency = data.proficiency || 0.0; ability.unconsolidatedProficiency = data.unconsolidatedProficiency || 0.0;
-                            
-                            if (data.upgrades) {
-                                for (const [upk, upv] of Object.entries(data.upgrades)) { 
-                                    const up = upv as any; const upgrade = new SkillUpgrade(); 
-                                    upgrade.id = up.id; upgrade.unlocked = up.unlocked; upgrade.currentRank = up.currentRank; upgrade.maxRank = up.maxRank; 
-                                    ability.upgrades.set(upk, upgrade); 
-                                }
-                            }
+                            ability.id = data.id; ability.baseLevel = data.baseLevel; ability.rank = data.rank || "Iron"; ability.level = data.level || 0; ability.proficiency = data.proficiency || 0.0; ability.unconsolidatedProficiency = data.unconsolidatedProficiency || 0.0;
+                            if (data.upgrades) { for (const [upk, upv] of Object.entries(data.upgrades)) { const up = upv as any; const upgrade = new SkillUpgrade(); upgrade.id = up.id; upgrade.unlocked = up.unlocked; upgrade.currentRank = up.currentRank; upgrade.maxRank = up.maxRank; ability.upgrades.set(upk, upgrade); } }
                             player.skillTree.activeAbilities.set(k, ability);
                         }
+                    }
+                }
+                
+                if (d.completedQuests) { d.completedQuests.forEach((qId: string) => player.completedQuests.push(qId)); }
+                if (d.activeQuests) {
+                    for (const [k, v] of Object.entries(d.activeQuests)) {
+                        const data = v as any; const qState = new QuestProgressState();
+                        qState.questId = k; qState.currentAmount = data.currentAmount; qState.isCompleted = data.isCompleted;
+                        player.activeQuests.set(k, qState);
                     }
                 }
             }
         } catch (err) {
             console.error("Error loading player from DB:", err);
         }
-        
-        if (!this.clients.includes(client)) {
-            return;
+
+        // --- NEW ACCOUNT QUEST INJECTION ---
+        if (player.completedQuests.length === 0 && player.activeQuests.size === 0) {
+            const firstQuest = new QuestProgressState();
+            firstQuest.questId = "tutorial_1_fish";
+            player.activeQuests.set("tutorial_1_fish", firstQuest);
+            this.markPlayerDirty(player.sessionId);
         }
+        
+        if (!this.clients.includes(client)) return;
 
         const isTown = this.roomName === "town" || this.constructor.name === "TownRoom";
         const isMaze = this.roomName === "maze" || this.constructor.name === "MazeRoom";
@@ -1765,9 +1826,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             player.x = 0; player.y = 0;
         } else {
             const isBlocked = (isTown && checkTownCollision(player.x, player.y)) || checkDynamicCollision(this.state, player.x, player.y);
-            if (isBlocked) {
-                player.x = 0; player.y = 20; 
-            }
+            if (isBlocked) { player.x = 0; player.y = 20; }
         }
 
         let bonusSpd = 0; 
@@ -1780,52 +1839,29 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
         setTimeout(() => {
             if (this.clients.includes(client)) {
-                client.send("global_event_sync", { 
-                    name: BaseRoom.nextEventName, 
-                    remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) 
-                });
+                client.send("global_event_sync", { name: BaseRoom.nextEventName, remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) });
             }
         }, 500);
 
-        this.broadcastNearby(player.x, player.y, 60, "server_event_log", {
-            html: `👋 <b>${player.name}</b> joined the realm.`,
-            type: "event-join"
-        });
-
+        this.broadcastNearby(player.x, player.y, 60, "server_event_log", { html: `👋 <b>${player.name}</b> joined the realm.`, type: "event-join" });
         syncFamiliars(this);
     }
 
-    // UPDATED: Use code?: number instead of consented: boolean
     async onLeave(client: Client, code?: number) { 
-        // We can still determine if they consented by checking the code!
         const consented = (code === CloseCode.CONSENTED);
-        
         const player = this.state.players.get(client.sessionId); 
         if (!player) return; 
 
         if (!consented) {
-            try {
-                // Wait for the player to reconnect
-                client = await this.allowReconnection(client, 15);
-                this.onClientReconnected(client);
-                return; 
-            } catch (e) {
-                // Time out reached, proceed with full disconnect
-            }
+            try { client = await this.allowReconnection(client, 15); this.onClientReconnected(client); return; } catch (e) { }
         }
 
-        this.broadcastNearby(player.x, player.y, 60, "server_event_log", {
-            html: `🚪 <b>${player.name}</b> left the realm.`,
-            type: "event-info"
-        });
+        this.broadcastNearby(player.x, player.y, 60, "server_event_log", { html: `🚪 <b>${player.name}</b> left the realm.`, type: "event-info" });
 
         this.playerGrid.remove(player, player.x, player.y); 
         this.lastMoveTimes.delete(client.sessionId);
-        
-        // Final synchronous save before removing from memory
         await this.savePlayerToDB(client.sessionId); 
         this.dirtyPlayers.delete(client.sessionId);
-        
         this.lastAttackTimes.delete(client.sessionId); 
         this.state.players.delete(client.sessionId); 
         
@@ -1837,10 +1873,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     }
 
     protected onClientReconnected(client: Client) {
-        client.send("global_event_sync", { 
-            name: BaseRoom.nextEventName, 
-            remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) 
-        });
+        client.send("global_event_sync", { name: BaseRoom.nextEventName, remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) });
     }
 
     // ==========================================
