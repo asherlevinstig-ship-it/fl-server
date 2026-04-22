@@ -9,6 +9,11 @@ export class PlayerState extends Schema {
     @type("string") classId: string = "";
     @type("string") pathwayId: string = "";
 
+    // --- Progressive Unlocks (Onboarding) ---
+    @type("boolean") hasUnlockedAura: boolean = false;
+    @type("boolean") hasUnlockedBuilding: boolean = false;
+    @type("boolean") hasUnlockedSkillTree: boolean = false;
+
     // --- HWFWM Progression ---
     @type("string") rank: string = "Iron";
     @type("number") level: number = 1;
@@ -64,11 +69,11 @@ export class PlayerState extends Schema {
     @type("number") meditationCount: number = 0; // Tracks questions answered for Aura upgrades
     @type("boolean") isSprinting: boolean = false;
     @type("boolean") isSpiritAnimal: boolean = false;
-    
 
     // --- Mount System ---
     @type("string") mountedFamiliarId: string = ""; // Empty string means not mounted
     @type("boolean") isFlying: boolean = false; // For Z-axis/Y-axis lifting
+    
     // --- Fishing Mechanics ---
     @type("string") fishingState: string = "none"; // "none", "casting", "waiting", "reeling"
     @type("number") bobberX: number = 0;

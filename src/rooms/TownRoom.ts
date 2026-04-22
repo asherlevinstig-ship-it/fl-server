@@ -67,6 +67,57 @@ export class TownRoom extends BaseRoom<TownState> {
     private tickCounter = 0;
     private eventSpawnTimer = 0;
 
+    // --- CASINO STATE TRACKERS ---
+    private activeBlackjackGames = new Map<string, { bet: number, pHand: number[], dHand: number[] }>();
+
+    // --- PROGRESSIVE DISCLOSURE HANDLER ---
+    private checkProgressionUnlocks(player: any, client: any) {
+        let unlockedSomething = false;
+
+        // Unlock Skill Tree & Aura at Level 2
+        if (player.level >= 2 && !player.hasUnlockedSkillTree) {
+            player.hasUnlockedSkillTree = true;
+            player.hasUnlockedAura = true;
+            unlockedSomething = true;
+            client.send("server_event_log", { 
+                html: `✨ You reached Level 2! Press <span class="hud-key">K</span> to open your Skill Tree and <span class="hud-key">Z</span> to Meditate.`, 
+                type: "event-win" 
+            });
+        }
+
+        // Unlock Land Purchasing at 100 coins
+        if (player.coins >= 100 && !player.hasUnlockedBuilding) {
+            player.hasUnlockedBuilding = true;
+            unlockedSomething = true;
+            client.send("server_event_log", { 
+                html: `🏡 You have 100 Coins! Press <span class="hud-key">B</span> in the Wilderness to purchase Land.`, 
+                type: "event-win" 
+            });
+        }
+
+        if (unlockedSomething) {
+            this.markPlayerDirty(client.sessionId);
+        }
+    }
+
+    private drawCard() {
+        const val = Math.floor(Math.random() * 13) + 1; // 1 to 13
+        if (val === 1) return 11; // Ace
+        if (val >= 10) return 10; // Face cards
+        return val;
+    }
+
+    private calcScore(hand: number[]) {
+        let score = 0; let aces = 0;
+        for (const card of hand) {
+            if (card === 11) { aces += 1; score += 11; }
+            else if (card >= 10) { score += 10; }
+            else { score += card; }
+        }
+        while (score > 21 && aces > 0) { score -= 10; aces -= 1; }
+        return score;
+    }
+
     async onCreate(options: any) {
         console.log(`\n[TownRoom] ---------------------------------`);
         console.log(`[TownRoom] onCreate started...`);
@@ -127,71 +178,171 @@ export class TownRoom extends BaseRoom<TownState> {
             }
         });
 
-        this.onMessage("playCasino", (client, message: { game: string, bet: number, guess?: string }) => {
+        // ==========================================
+        // DYNAMIC CASINO & MINI-GAMES
+        // ==========================================
+
+        this.onMessage("playSlotMachine", (client, message: { bet: number }) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isSleeping || player.isMeditating || message.bet <= 0 || player.coins < message.bet) return;
 
-            this.broadcastNearby(player.x, player.y, 40, "playCasinoVisual", { game: message.game });
             player.coins -= message.bet;
             
+            const symbols = ["🍒", "🍋", "🔔", "💎", "7️⃣"];
+            const r1 = symbols[Math.floor(Math.random() * symbols.length)];
+            const r2 = symbols[Math.floor(Math.random() * symbols.length)];
+            const r3 = symbols[Math.floor(Math.random() * symbols.length)];
+
             let winnings = 0;
             let resultText = "";
-            let delayMs = 1000; 
+            if (r1 === r2 && r2 === r3) { winnings = message.bet * 10; resultText = `🌟 JACKPOT!`; } 
+            else if (r1 === r2 || r2 === r3 || r1 === r3) { winnings = message.bet * 2; resultText = `🎉 Small Win!`; } 
+            else { resultText = `💀 Loss.`; }
 
-            if (message.game === "Coin Toss") {
-                const isHeads = Math.random() < 0.5;
-                const result = isHeads ? "heads" : "tails";
-                if (message.guess === result) {
-                    winnings = message.bet * 2; resultText = `🎉 You won! The coin landed on ${result.toUpperCase()}.`;
-                } else {
-                    resultText = `💀 You lost. The coin landed on ${result.toUpperCase()}.`;
-                }
-            } 
-            else if (message.game === "Slot Machine") {
-                const symbols = ["🍒", "🍋", "🔔", "💎", "7️⃣"];
-                const r1 = symbols[Math.floor(Math.random() * symbols.length)];
-                const r2 = symbols[Math.floor(Math.random() * symbols.length)];
-                const r3 = symbols[Math.floor(Math.random() * symbols.length)];
-
-                if (r1 === r2 && r2 === r3) {
-                    winnings = message.bet * 10; resultText = `🌟 JACKPOT! [ ${r1} | ${r2} | ${r3} ]`;
-                } else if (r1 === r2 || r2 === r3 || r1 === r3) {
-                    winnings = message.bet * 2; resultText = `🎉 Small Win! [ ${r1} | ${r2} | ${r3} ]`;
-                } else {
-                    resultText = `💀 Loss. [ ${r1} | ${r2} | ${r3} ]`;
-                }
-            } 
-            else if (message.game === "Roulette") {
-                delayMs = 2000; 
-                const roll = Math.floor(Math.random() * 37);
-                const isRed = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(roll);
-                const color = roll === 0 ? "green" : (isRed ? "red" : "black");
-
-                if (message.guess === "red" && isRed) { winnings = message.bet * 2; resultText = `🎉 Won! Rolled Red ${roll}.`; } 
-                else if (message.guess === "black" && !isRed && roll !== 0) { winnings = message.bet * 2; resultText = `🎉 Won! Rolled Black ${roll}.`; } 
-                else if (message.guess === String(roll)) { winnings = message.bet * 35; resultText = `🔥 MASSIVE WIN! Rolled EXACTLY ${roll}!`; } 
-                else { resultText = `💀 Lost. Rolled ${color} ${roll}.`; }
-            } 
-            else if (message.game === "Blackjack") {
-                const drawCard = () => Math.floor(Math.random() * 10) + 2; 
-                let pScore = drawCard() + drawCard(); let dScore = drawCard() + drawCard();
-
-                while (pScore < 17) pScore += drawCard();
-                while (dScore < 17) dScore += drawCard();
-
-                if (pScore > 21) { resultText = `💀 Bust! You hit ${pScore}. Dealer wins.`; } 
-                else if (dScore > 21 || pScore > dScore) { winnings = message.bet * 2; resultText = `🎉 You win! You: ${pScore} vs Dealer: ${dScore}.`; } 
-                else if (pScore === dScore) { winnings = message.bet; resultText = `🤝 Push. Tie at ${pScore}.`; } 
-                else { resultText = `💀 Dealer wins! You: ${pScore} vs Dealer: ${dScore}.`; }
-            }
+            // Tell frontend exactly where the reels should stop
+            this.broadcastNearby(player.x, player.y, 40, "playCasinoVisual", { 
+                game: "Slot Machine", action: "spin", payload: { target: [r1, r2, r3] } 
+            });
 
             setTimeout(() => {
                 const p = this.state.players.get(client.sessionId);
                 if (p) {
                     p.coins += winnings; this.markPlayerDirty(client.sessionId);
-                    client.send("casinoResult", { game: message.game, winnings: winnings, text: resultText, newBalance: p.coins });
+                    this.checkProgressionUnlocks(p, client);
+                    client.send("casinoResult", { game: "Slot Machine", winnings, text: resultText, newBalance: p.coins });
                 }
-            }, delayMs);
+            }, 2000); // 2 second spin
+        });
+
+        this.onMessage("playCoinToss", (client, message: { bet: number, guess: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isSleeping || player.isMeditating || message.bet <= 0 || player.coins < message.bet) return;
+
+            player.coins -= message.bet;
+            this.broadcastNearby(player.x, player.y, 40, "playCasinoVisual", { game: "Coin Toss" });
+
+            const isHeads = Math.random() < 0.5;
+            const result = isHeads ? "heads" : "tails";
+            const won = message.guess === result;
+            const winnings = won ? message.bet * 2 : 0;
+            const resultText = won ? `🎉 You won! Landed on ${result.toUpperCase()}.` : `💀 You lost. Landed on ${result.toUpperCase()}.`;
+
+            setTimeout(() => {
+                const p = this.state.players.get(client.sessionId);
+                if (p) {
+                    p.coins += winnings; this.markPlayerDirty(client.sessionId);
+                    this.checkProgressionUnlocks(p, client);
+                    client.send("casinoResult", { game: "Coin Toss", winnings, text: resultText, newBalance: p.coins });
+                }
+            }, 1000);
+        });
+
+        this.onMessage("playRoulette", (client, message: { bet: number, guess: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isSleeping || player.isMeditating || message.bet <= 0 || player.coins < message.bet) return;
+
+            player.coins -= message.bet;
+            this.broadcastNearby(player.x, player.y, 40, "playCasinoVisual", { game: "Roulette" });
+
+            const roll = Math.floor(Math.random() * 37);
+            const isRed = [1,3,5,7,9,12,14,16,18,19,21,23,25,27,30,32,34,36].includes(roll);
+            const color = roll === 0 ? "green" : (isRed ? "red" : "black");
+
+            let winnings = 0;
+            let resultText = "";
+
+            if (message.guess === "red" && isRed) { winnings = message.bet * 2; resultText = `🎉 Won! Rolled Red ${roll}.`; } 
+            else if (message.guess === "black" && !isRed && roll !== 0) { winnings = message.bet * 2; resultText = `🎉 Won! Rolled Black ${roll}.`; } 
+            else if (message.guess === String(roll)) { winnings = message.bet * 35; resultText = `🔥 MASSIVE WIN! EXACTLY ${roll}!`; } 
+            else { resultText = `💀 Lost. Rolled ${color} ${roll}.`; }
+
+            setTimeout(() => {
+                const p = this.state.players.get(client.sessionId);
+                if (p) {
+                    p.coins += winnings; this.markPlayerDirty(client.sessionId);
+                    this.checkProgressionUnlocks(p, client);
+                    client.send("casinoResult", { game: "Roulette", winnings, text: resultText, newBalance: p.coins });
+                }
+            }, 2000);
+        });
+
+        // --- BLACKJACK STATE MACHINE ---
+        this.onMessage("blackjack_start", (client, message: { bet: number }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isSleeping || player.isMeditating || message.bet <= 0 || player.coins < message.bet) return;
+            if (this.activeBlackjackGames.has(client.sessionId)) return; // Game already in progress
+
+            player.coins -= message.bet;
+            this.markPlayerDirty(client.sessionId);
+
+            const pHand = [this.drawCard(), this.drawCard()];
+            const dHand = [this.drawCard(), this.drawCard()];
+
+            this.activeBlackjackGames.set(client.sessionId, { bet: message.bet, pHand, dHand });
+
+            // Tell 3D scene to render holographic cards
+            this.broadcastNearby(player.x, player.y, 40, "playCasinoVisual", { 
+                game: "Blackjack", action: "deal", payload: { pHand, dHand } 
+            });
+
+            // Send private game state to the player's UI
+            client.send("blackjack_state", {
+                status: "playing",
+                pHand: pHand,
+                dHand: [dHand[0], 0], // Hide second dealer card from UI
+                pScore: this.calcScore(pHand),
+                dScore: this.calcScore([dHand[0]])
+            });
+        });
+
+        this.onMessage("blackjack_action", (client, message: { action: "hit" | "stand" }) => {
+            const game = this.activeBlackjackGames.get(client.sessionId);
+            const player = this.state.players.get(client.sessionId);
+            if (!game || !player) return;
+
+            if (message.action === "hit") {
+                const newCard = this.drawCard();
+                game.pHand.push(newCard);
+                const pScore = this.calcScore(game.pHand);
+
+                this.broadcastNearby(player.x, player.y, 40, "playCasinoVisual", { 
+                    game: "Blackjack", action: "hit", payload: { newCard } 
+                });
+
+                if (pScore > 21) {
+                    client.send("blackjack_state", { status: "bust", pHand: game.pHand, dHand: game.dHand, pScore, dScore: this.calcScore(game.dHand), winnings: 0 });
+                    this.activeBlackjackGames.delete(client.sessionId);
+                } else {
+                    client.send("blackjack_state", { status: "playing", pHand: game.pHand, dHand: [game.dHand[0], 0], pScore, dScore: this.calcScore([game.dHand[0]]) });
+                }
+            } 
+            else if (message.action === "stand") {
+                let dScore = this.calcScore(game.dHand);
+                
+                while (dScore < 17) {
+                    game.dHand.push(this.drawCard());
+                    dScore = this.calcScore(game.dHand);
+                }
+
+                const pScore = this.calcScore(game.pHand);
+                let winnings = 0;
+                let finalStatus = "lose";
+
+                if (dScore > 21 || pScore > dScore) { winnings = game.bet * 2; finalStatus = "win"; } 
+                else if (pScore === dScore) { winnings = game.bet; finalStatus = "push"; }
+
+                player.coins += winnings;
+                this.markPlayerDirty(client.sessionId);
+                this.checkProgressionUnlocks(player, client);
+
+                this.broadcastNearby(player.x, player.y, 40, "playCasinoVisual", { 
+                    game: "Blackjack", action: "reveal", payload: { pHand: game.pHand, dHand: game.dHand } 
+                });
+
+                client.send("blackjack_state", { status: finalStatus, pHand: game.pHand, dHand: game.dHand, pScore, dScore, winnings });
+                client.send("casinoResult", { game: "Blackjack", winnings, text: `Blackjack ${finalStatus.toUpperCase()}`, newBalance: player.coins });
+                this.activeBlackjackGames.delete(client.sessionId);
+            }
         });
 
         this.onMessage("buyLand", async (client) => {
@@ -530,6 +681,12 @@ export class TownRoom extends BaseRoom<TownState> {
         // Throttle expensive global checks
         if (this.tickCounter % 20 === 0) { // Every 1 sec
             this.checkStoreLeases();
+            
+            // NEW: Periodic progression check for all players (catches EXP/Loot gains from BaseRoom)
+            this.state.players.forEach((player, sessionId) => {
+                const client = this.clients.find(c => c.sessionId === sessionId);
+                if (client) this.checkProgressionUnlocks(player, client);
+            });
         }
 
         if (this.tickCounter % 100 === 0) { // Every 5 sec
