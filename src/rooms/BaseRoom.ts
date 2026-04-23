@@ -113,7 +113,7 @@ type QueuedAction =
     | { type: "interact", client: Client };
 
 export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
-    public state!: T; // Satisfies strict external controller typings
+    public state!: T; 
     public playerGrid = new SpatialGrid<PlayerState>(50);
     public enemyGrid = new SpatialGrid<EnemyState>(50);
     public sceneryGrid = new SpatialGrid<SceneryState>(50);
@@ -128,7 +128,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
     // --- PERFORMANCE: Queues and Batches ---
     private actionQueue: QueuedAction[] = [];
-    private dirtyPlayers = new Set<string>(); // Tracks players that need Firebase saving
+    private dirtyPlayers = new Set<string>(); 
 
     public static availableEvents = [
         { name: "The Labyrinth", zone: "maze" },
@@ -244,7 +244,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     player.coins += qDef.rewards.coins;
                     player.experience += qDef.rewards.exp;
                     
-                    // Check level up from quest exp
                     if (player.experience >= player.experienceToNextLevel) {
                         player.experience -= player.experienceToNextLevel;
                         player.level += 1;
@@ -264,7 +263,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         type: "event-win"
                     });
                     
-                    // Automatically chain next quest
                     if (qDef.nextQuestId) {
                         const nextQ = new QuestProgressState();
                         nextQ.questId = qDef.nextQuestId;
@@ -316,7 +314,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 type: "event-kill"
             });
 
-            // Try to progress any 'kill' quests
             const client = this.clients.find(c => c.sessionId === player.sessionId);
             if (client) {
                 this.progressQuest(player, "kill", victimName, 1, client);
@@ -350,7 +347,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (!this.state.enemies) return;
         const enemy = this.state.enemies.get(enemyId);
         if (enemy) {
-            // 🔥 DIABLO COIN DROP
             this.spawnDrop(enemy.x, enemy.y, "Coin_15");
 
             if (Math.random() > 0.7) {
@@ -599,6 +595,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             this.markPlayerDirty(client.sessionId);
             
             syncFamiliars(this);
+
+            // --- PROGRESS QUEST WHEN AWAKENING/SELECTING A SKILL ---
+            this.progressQuest(player, "action", "select_ability", 1, client);
         });
 
         this.onMessage("adminLevelUp", (client) => {
@@ -1829,8 +1828,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         // --- NEW ACCOUNT QUEST INJECTION ---
         if (player.completedQuests.length === 0 && player.activeQuests.size === 0) {
             const firstQuest = new QuestProgressState();
-            firstQuest.questId = "tutorial_1_fish";
-            player.activeQuests.set("tutorial_1_fish", firstQuest);
+            firstQuest.questId = "tutorial_0_ability";
+            player.activeQuests.set("tutorial_0_ability", firstQuest);
             this.markPlayerDirty(player.sessionId);
         }
         

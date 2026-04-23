@@ -1,6 +1,6 @@
 export type QuestObjective = {
     type: "kill" | "gather" | "action";
-    targetId: string; // e.g., "Dire Wolf", "Wood", "catch_fish"
+    targetId: string; // e.g., "Dire Wolf", "Wood", "catch_fish", "select_ability"
     requiredAmount: number;
 };
 
@@ -19,6 +19,17 @@ export type QuestDef = {
 };
 
 export const QUEST_DB: Record<string, QuestDef> = {
+    "tutorial_0_ability": {
+        id: "tutorial_0_ability",
+        title: "Awakening: Your First Skill",
+        giverName: "Lord Protector",
+        dialogue: "Welcome to the realm! Before you brave the wilds, you must awaken your power. Open your Skill Tree (<span class='hud-key'>K</span>), choose a path, and click <b>SELECT SLOT</b> to commit your first skill!",
+        objectives: [
+            { type: "action", targetId: "select_ability", requiredAmount: 1 }
+        ],
+        rewards: { coins: 100, exp: 50 },
+        nextQuestId: "tutorial_1_fish"
+    },
     "tutorial_1_fish": {
         id: "tutorial_1_fish",
         title: "Survival 101: Fishing",
