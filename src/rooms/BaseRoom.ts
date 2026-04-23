@@ -228,6 +228,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     // --- NEW: QUEST HELPER ENGINE ---
     public progressQuest(player: PlayerState, type: string, targetId: string, amount: number, client: Client | undefined) {
         if (!client) return;
+
         player.activeQuests.forEach((qProgress, qId) => {
             const qDef = QUEST_DB[qId];
             if (!qDef) return;
@@ -317,7 +318,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
             // Try to progress any 'kill' quests
             const client = this.clients.find(c => c.sessionId === player.sessionId);
-            if (client) this.progressQuest(player, "kill", victimName, 1, client);
+            if (client) {
+                this.progressQuest(player, "kill", victimName, 1, client);
+            }
         }
 
         this.markPlayerDirty(player.sessionId);
@@ -747,7 +750,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             else if (def.equipSlot === "offhand") p.equipOffHand = (p.equipOffHand === message.itemName) ? "" : message.itemName;
             else if (def.type !== "armor" && def.type !== "cosmetic") p.equippedItem = (p.equippedItem === message.itemName) ? "" : message.itemName;
             
-            // Note: movementSpeed is now dynamically calculated in universalUpdate
             this.markPlayerDirty(client.sessionId);
         });
 
@@ -1196,7 +1198,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
-    
     private processMove(client: Client, message: MoveMessage) {
         const player = this.state.players.get(client.sessionId);
         
@@ -1733,6 +1734,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         player.isSleeping = false; player.sleepRot = 0; player.isMeditating = false;
         player.meditationCount = 0; player.rootedUntil = 0;
         player.skillTree.unspentEssencePoints = 2; player.skillTree.unspentAwakeningPoints = 5;
+
+        // NEW: Give the starter Wooden Sword!
+        const starterSword = new InventoryItemState();
+        starterSword.name = "Wooden Sword";
+        starterSword.quantity = 1;
+        starterSword.desc = ITEM_DB["Wooden Sword"]?.desc || "A basic training sword made of wood. Better than your fists. +2 ATK.";
+        player.inventory.set("Wooden Sword", starterSword);
+        player.equippedItem = "Wooden Sword"; // Auto-equip it
         
         player.teamId = 0;
         player.isTeamLeader = false;

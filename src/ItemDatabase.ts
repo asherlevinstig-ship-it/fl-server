@@ -83,6 +83,10 @@ export const ITEM_DB: Record<string, ItemDef> = {
   },
 
   // --- WEAPONS & OFFHAND ---
+  "Wooden Sword": {
+    id: "itm_wood_sword", name: "Wooden Sword", type: "weapon", rank: "Iron", equipSlot: "mainhand", icon: "🗡️",
+    desc: "A basic training sword made of wood. Better than your fists. +2 ATK.", buyPrice: 50, wholesalePrice: 25, stats: { atk: 2 }
+  },
   "Iron Sword": {
     id: "itm_iron_sword", name: "Iron Sword", type: "weapon", rank: "Iron", equipSlot: "mainhand", icon: "⚔️",
     desc: "Basic melee weapon. +5 ATK.", buyPrice: 150, wholesalePrice: 75, stats: { atk: 5 }
