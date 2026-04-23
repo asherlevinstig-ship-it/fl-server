@@ -1232,14 +1232,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     // Generous 0.5 server collision radius
                     const hitTownX = isTown && checkTownCollision(nextX, player.y, 0.5);
                     const hitDynX = checkDynamicCollision(this.state, nextX, player.y, 0.5);
-                    const hitMazeX = isMaze && checkMazeCollision(nextX, player.y);
-                    const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y);
+                    const hitMazeX = isMaze && checkMazeCollision(nextX, player.y, 0.5);
+                    const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y, 0.5);
                     if (hitTownX || hitDynX || hitMazeX || hitUnderX) nextX = player.x;
 
                     const hitTownY = isTown && checkTownCollision(player.x, nextY, 0.5);
                     const hitDynY = checkDynamicCollision(this.state, player.x, nextY, 0.5);
-                    const hitMazeY = isMaze && checkMazeCollision(player.x, nextY);
-                    const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY);
+                    const hitMazeY = isMaze && checkMazeCollision(player.x, nextY, 0.5);
+                    const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY, 0.5);
                     if (hitTownY || hitDynY || hitMazeY || hitUnderY) nextY = player.y;
                 }
 
@@ -1289,8 +1289,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             const serverRadius = 0.5;
             const hitTownX = isTown && checkTownCollision(nextX, player.y, serverRadius);
             const hitDynX = checkDynamicCollision(this.state, nextX, player.y, serverRadius);
-            const hitMazeX = isMaze && checkMazeCollision(nextX, player.y);
-            const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y);
+            const hitMazeX = isMaze && checkMazeCollision(nextX, player.y, serverRadius);
+            const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y, serverRadius);
             
             const blockedX = hitTownX || hitDynX || hitMazeX || hitUnderX;
 
@@ -1302,8 +1302,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             // Y-Axis Check (Forgiving 0.5 radius)
             const hitTownY = isTown && checkTownCollision(player.x, nextY, serverRadius);
             const hitDynY = checkDynamicCollision(this.state, player.x, nextY, serverRadius);
-            const hitMazeY = isMaze && checkMazeCollision(player.x, nextY);
-            const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY);
+            const hitMazeY = isMaze && checkMazeCollision(player.x, nextY, serverRadius);
+            const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY, serverRadius);
             
             const blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
 
@@ -2863,8 +2863,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         let nX = enemy.x + Math.cos(angle) * moveD; let nY = enemy.y + Math.sin(angle) * moveD;
                         
                         if (nX*nX + enemy.y*enemy.y < 14400) { 
-                            if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
-                            if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
+                            if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y, 0.5)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y, 0.5)))) enemy.x = nX; 
+                            if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY, 0.5)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY, 0.5)))) enemy.y = nY; 
                         } else { 
                             enemy.x = nX; enemy.y = nY; 
                         }
@@ -2888,8 +2888,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         let nX = enemy.x + Math.cos(angle) * moveD; let nY = enemy.y + Math.sin(angle) * moveD;
                         
                         if (nX*nX + enemy.y*enemy.y < 14400) { 
-                            if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
-                            if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
+                            if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y, 0.5)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y, 0.5)))) enemy.x = nX; 
+                            if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY, 0.5)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY, 0.5)))) enemy.y = nY; 
                         } else { 
                             enemy.x = nX; enemy.y = nY; 
                         }
@@ -2899,7 +2899,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (isNaN(enemy.targetX) || distSq(enemy.x, enemy.y, enemy.targetX, enemy.targetY) < 1.0) {
                         for(let i=0; i<5; i++) {
                             const tx = enemy.x + (Math.random() - 0.5) * 60; const ty = enemy.y + (Math.random() - 0.5) * 60;
-                            if (tx*tx + ty*ty >= 10000 && !((isTown && checkTownCollision(tx, ty, 0.5)) || (isMaze && checkMazeCollision(tx, ty)) || (isUnderworld && checkUnderworldCollision(tx, ty)))) { 
+                            if (tx*tx + ty*ty >= 10000 && !((isTown && checkTownCollision(tx, ty, 0.5)) || (isMaze && checkMazeCollision(tx, ty, 0.5)) || (isUnderworld && checkUnderworldCollision(tx, ty, 0.5)))) { 
                                 enemy.targetX = tx; enemy.targetY = ty; break; 
                             }
                         }
@@ -2911,8 +2911,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     let nX = enemy.x + Math.cos(angle) * moveD; let nY = enemy.y + Math.sin(angle) * moveD;
                     
                     if (nX*nX + enemy.y*enemy.y < 14400) { 
-                        if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
-                        if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
+                        if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y, 0.5)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y, 0.5)))) enemy.x = nX; 
+                        if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY, 0.5)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY, 0.5)))) enemy.y = nY; 
                     } else { 
                         enemy.x = nX; enemy.y = nY; 
                     }

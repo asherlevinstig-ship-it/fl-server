@@ -304,8 +304,7 @@ export function generateMaze(seed: number) {
     return renderData; // Return data so the client can render the meshes
 }
 
-export function checkMazeCollision(x: number, y: number): boolean {
-    const r = 1.0; // Player collision radius
+export function checkMazeCollision(x: number, y: number, r: number = 0.85): boolean {
     for (const box of MAZE_COLLIDERS) {
         if (x + r > box.minX && x - r < box.maxX && y + r > box.minY && y - r < box.maxY) {
             return true;
@@ -346,8 +345,7 @@ export function generateUnderworldColliders() {
 
 generateUnderworldColliders();
 
-export function checkUnderworldCollision(x: number, y: number): boolean {
-    const r = 1.2; // Player collision radius
+export function checkUnderworldCollision(x: number, y: number, r: number = 0.85): boolean {
     for (const box of UNDERWORLD_COLLIDERS) {
         if (x + r > box.minX && x - r < box.maxX && y + r > box.minY && y - r < box.maxY) {
             return true;
