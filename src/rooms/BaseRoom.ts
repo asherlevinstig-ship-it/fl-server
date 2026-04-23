@@ -225,7 +225,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
-    // --- NEW: QUEST HELPER ENGINE ---
+    // --- QUEST HELPER ENGINE ---
     public progressQuest(player: PlayerState, type: string, targetId: string, amount: number, client: Client | undefined) {
         if (!client) return;
 
@@ -302,7 +302,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         }
 
-        // --- NEW: Shadow Monarch Soul Extraction ---
+        // --- Shadow Monarch Soul Extraction ---
         if (player.skillTree.activeAbilities.has("monarch_base")) {
             const capRank = player.skillTree.activeAbilities.get("monarch_base")?.upgrades.get("shadow_capacity")?.currentRank || 1;
             const maxSouls = capRank >= 4 ? 20 : (capRank >= 3 ? 10 : (capRank >= 2 ? 5 : 3));
@@ -418,7 +418,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     // ==========================================
     async onCreate(options: any) {
         
-        // --- INITIALIZE TRADE SYSTEM ---
         setupTradeSystem(this);
 
         // --- PERFORMANCE: Background Firebase Save Loop (15s) ---
@@ -441,7 +440,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             this.universalUpdate(deltaTime);
         }, 50); 
 
-        // --- SCENE TRANSITIONS / FAST TRAVEL ---
         this.onMessage("teleport", (client, message: { destination: string, x?: number, z?: number }) => {
             const p = this.state.players.get(client.sessionId);
             if (!p || p.isSleeping || p.isMeditating || Date.now() < p.rootedUntil) return;
@@ -450,7 +448,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             client.send("server_event_teleport", { zone: message.destination, x: message.x, z: message.z });
         });
 
-        // --- PERFORMANCE: Queue Action Messages instead of immediate execution ---
+        // Action Queue Population
         this.onMessage("move", (client, message: MoveMessage) => {
             this.actionQueue.push({ type: "move", client, data: message });
         });
@@ -478,7 +476,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // --- MOUNT SYSTEM ---
         this.onMessage("toggle_mount", (client) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.isSleeping || player.isMeditating || Date.now() < player.rootedUntil) return;
@@ -489,13 +486,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             if (!familiar) return;
 
             if ((player as any).mountedFamiliarId === familiarId) {
-                // Dismount
                 (player as any).mountedFamiliarId = "";
                 (player as any).isFlying = false;
                 familiar.action = "orbiting";
                 this.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "dismount", targetX: player.x, targetZ: player.y });
             } else {
-                // Check if mountable
                 if (familiar.type === "storm_gryphon" || familiar.type === "ironclad_behemoth" || familiar.type === "dragon_hoarder") {
                     const coreKey = familiar.type === "storm_gryphon" ? "gryphon_base" : (familiar.type === "ironclad_behemoth" ? "behemoth_base" : "stash_base");
                     const coreNode = player.skillTree.activeAbilities.get(coreKey);
@@ -519,7 +514,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // --- FLIGHT TOGGLE ---
         this.onMessage("toggle_flight", (client) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || (player as any).mountedFamiliarId === "") return;
@@ -550,7 +544,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // --- SKILLS & PROGRESSION ---
         this.onMessage("changePathway", (client, message: { pathwayId: string }) => {
             const player = this.state.players.get(client.sessionId);
             if (player) {
@@ -631,7 +624,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             syncFamiliars(this);
         });
 
-        // --- TEAM SYSTEM HANDLERS ---
         this.onMessage("createTeam", (client) => {
             const player = this.state.players.get(client.sessionId);
             if (!player || player.teamId !== 0) return;
@@ -695,7 +687,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             this.removePlayerFromTeam(message.targetSessionId, true);
         });
 
-        // --- QUICK CHAT SYSTEM ---
         this.onMessage("quick_chat", (client, message: { channel: "local" | "team" | "global", msgId: string }) => {
             const p = this.state.players.get(client.sessionId);
             if (!p || p.isSleeping || p.isMeditating) return;
@@ -735,7 +726,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // --- INVENTORY & INTERACTION ---
         this.onMessage("equipItem", (client, message: { itemName: string }) => {
             const p = this.state.players.get(client.sessionId);
             if (!p || p.isSleeping || p.isMeditating) return;
@@ -818,7 +808,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // --- CHEST INTERACTIONS ---
         this.onMessage("depositChest", (client, message: { chestId: string, itemName: string }) => {
             const p = this.state.players.get(client.sessionId);
             const chest = this.state.decorations?.get(message.chestId);
@@ -875,7 +864,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // --- SHOP INTERACTIONS ---
         this.onMessage("buyItem", (client, message: { storeId: string, itemName: string }) => {
             const p = this.state.players.get(client.sessionId);
             const store = this.state.stores?.get(message.storeId);
@@ -1214,9 +1202,16 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             (player as any).lastProcessedInput = message.seq;
         }
 
-        const dt = 0.05; 
+        // --- NEW: DYNAMIC TIME STEP (With Caps) ---
         const now = Date.now();
+        let dt = 0.05;
+        if (this.lastMoveTimes.has(client.sessionId)) {
+            dt = (now - this.lastMoveTimes.get(client.sessionId)!) / 1000;
+        }
         this.lastMoveTimes.set(client.sessionId, now);
+
+        // Cap dt to prevent massive speedhack leaps, but allow enough for normal internet jitter
+        dt = Math.max(0.05, Math.min(dt, 0.4));
 
         const oldX = player.x;
         const oldY = player.y;
@@ -1235,14 +1230,15 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 let nextY = targetY;
 
                 if (!isFlying) {
-                    const hitTownX = isTown && checkTownCollision(nextX, player.y);
-                    const hitDynX = checkDynamicCollision(this.state, nextX, player.y);
+                    // Generous 0.5 server collision radius
+                    const hitTownX = isTown && checkTownCollision(nextX, player.y, 0.5);
+                    const hitDynX = checkDynamicCollision(this.state, nextX, player.y, 0.5);
                     const hitMazeX = isMaze && checkMazeCollision(nextX, player.y);
                     const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y);
                     if (hitTownX || hitDynX || hitMazeX || hitUnderX) nextX = player.x;
 
-                    const hitTownY = isTown && checkTownCollision(player.x, nextY);
-                    const hitDynY = checkDynamicCollision(this.state, player.x, nextY);
+                    const hitTownY = isTown && checkTownCollision(player.x, nextY, 0.5);
+                    const hitDynY = checkDynamicCollision(this.state, player.x, nextY, 0.5);
                     const hitMazeY = isMaze && checkMazeCollision(player.x, nextY);
                     const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY);
                     if (hitTownY || hitDynY || hitMazeY || hitUnderY) nextY = player.y;
@@ -1264,7 +1260,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
 
         const moveSpeed = player.isSprinting ? player.movementSpeed * 1.6 : player.movementSpeed;
-        const allowedDistSq = Math.max(4.0, (moveSpeed * dt * 2.0)**2); 
+        
+        // Allowed distance includes speed * dynamic dt + a generous network buffer (2.5 units base)
+        const allowedDistSq = (moveSpeed * dt * 1.5 + 2.5) ** 2;
         const requestedDistSq = distSq(player.x, player.y, targetX, targetY);
 
         const isWolf = player.isSpiritAnimal || this.activeHazards.some(h => h.type === "spirit_animal" && h.ownerId === client.sessionId);
@@ -1274,47 +1272,55 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         
         // --- DEBUGGING TRACKER ---
         let debugReason = "";
+        let nextX = targetX;
+        let nextY = targetY;
 
-        if (requestedDistSq <= allowedDistSq) {
-            let nextX = targetX;
-            let nextY = targetY;
-
-            if (!isWolf) {
-                // X-Axis Check
-                const hitTownX = isTown && checkTownCollision(nextX, player.y);
-                const hitDynX = checkDynamicCollision(this.state, nextX, player.y);
-                const hitMazeX = isMaze && checkMazeCollision(nextX, player.y);
-                const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y);
-                
-                const blockedX = hitTownX || hitDynX || hitMazeX || hitUnderX;
-
-                if (blockedX) {
-                    nextX = player.x;
-                    if (isTown) debugReason += `[X-Block: Town=${hitTownX}, Dynamic=${hitDynX}] `;
-                }
-
-                // Y-Axis Check
-                const hitTownY = isTown && checkTownCollision(player.x, nextY);
-                const hitDynY = checkDynamicCollision(this.state, player.x, nextY);
-                const hitMazeY = isMaze && checkMazeCollision(player.x, nextY);
-                const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY);
-                
-                const blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
-
-                if (blockedY) {
-                    nextY = player.y;
-                    if (isTown) debugReason += `[Y-Block: Town=${hitTownY}, Dynamic=${hitDynY}] `;
-                }
-            }
-
-            serverX = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextX));
-            serverY = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextY));
-        } else {
-            debugReason += `[Speeding: ReqSq=${requestedDistSq.toFixed(2)} > AllowedSq=${allowedDistSq.toFixed(2)}] `;
+        if (requestedDistSq > allowedDistSq) {
+            // NEW: RUBBER BAND CLAMPING INSTEAD OF VIOLENT REJECT
+            const dist = Math.sqrt(requestedDistSq);
+            const maxDist = Math.sqrt(allowedDistSq);
+            const ratio = maxDist / dist;
+            nextX = player.x + (targetX - player.x) * ratio;
+            nextY = player.y + (targetY - player.y) * ratio;
+            debugReason += `[Clamped: Req ${dist.toFixed(1)} > Max ${maxDist.toFixed(1)}] `;
         }
 
+        if (!isWolf) {
+            // X-Axis Check (Forgiving 0.5 radius)
+            const serverRadius = 0.5;
+            const hitTownX = isTown && checkTownCollision(nextX, player.y, serverRadius);
+            const hitDynX = checkDynamicCollision(this.state, nextX, player.y, serverRadius);
+            const hitMazeX = isMaze && checkMazeCollision(nextX, player.y);
+            const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y);
+            
+            const blockedX = hitTownX || hitDynX || hitMazeX || hitUnderX;
+
+            if (blockedX) {
+                nextX = player.x;
+                if (isTown) debugReason += `[X-Block: Town=${hitTownX}, Dynamic=${hitDynX}] `;
+            }
+
+            // Y-Axis Check (Forgiving 0.5 radius)
+            const hitTownY = isTown && checkTownCollision(player.x, nextY, serverRadius);
+            const hitDynY = checkDynamicCollision(this.state, player.x, nextY, serverRadius);
+            const hitMazeY = isMaze && checkMazeCollision(player.x, nextY);
+            const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY);
+            
+            const blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
+
+            if (blockedY) {
+                nextY = player.y;
+                if (isTown) debugReason += `[Y-Block: Town=${hitTownY}, Dynamic=${hitDynY}] `;
+            }
+        }
+
+        serverX = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextX));
+        serverY = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextY));
+
         const errorDistSq = distSq(targetX, targetY, serverX, serverY);
-        const TOLERANCE_SQ = 2.25; // 1.5^2
+        
+        // Increase tolerance before snapping to 4 units
+        const TOLERANCE_SQ = 16.0; 
 
         player.x = serverX;
         player.y = serverY;
@@ -1351,12 +1357,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 const isMaze = this.roomName === "maze" || this.constructor.name === "MazeRoom";
                 const isUnderworld = this.roomName === "underworld" || this.constructor.name === "UnderworldRoom";
 
-                if (isWolf || (!((isTown && checkTownCollision(targetX, targetY)) || (isMaze && checkMazeCollision(targetX, targetY)) || (isUnderworld && checkUnderworldCollision(targetX, targetY))) && !checkDynamicCollision(this.state, targetX, targetY))) {
+                const serverRadius = 0.5;
+
+                if (isWolf || (!((isTown && checkTownCollision(targetX, targetY, serverRadius)) || (isMaze && checkMazeCollision(targetX, targetY)) || (isUnderworld && checkUnderworldCollision(targetX, targetY))) && !checkDynamicCollision(this.state, targetX, targetY, serverRadius))) {
                     nextX = targetX;
                     nextY = targetY;
                 } else {
-                    if (!((isTown && checkTownCollision(targetX, player.y)) || (isMaze && checkMazeCollision(targetX, player.y)) || (isUnderworld && checkUnderworldCollision(targetX, player.y))) && !checkDynamicCollision(this.state, targetX, player.y)) nextX = targetX;
-                    if (!((isTown && checkTownCollision(nextX, targetY)) || (isMaze && checkMazeCollision(nextX, targetY)) || (isUnderworld && checkUnderworldCollision(nextX, targetY))) && !checkDynamicCollision(this.state, nextX, targetY)) nextY = targetY;
+                    if (!((isTown && checkTownCollision(targetX, player.y, serverRadius)) || (isMaze && checkMazeCollision(targetX, player.y)) || (isUnderworld && checkUnderworldCollision(targetX, player.y))) && !checkDynamicCollision(this.state, targetX, player.y, serverRadius)) nextX = targetX;
+                    if (!((isTown && checkTownCollision(nextX, targetY, serverRadius)) || (isMaze && checkMazeCollision(nextX, targetY)) || (isUnderworld && checkUnderworldCollision(nextX, targetY))) && !checkDynamicCollision(this.state, nextX, targetY, serverRadius)) nextY = targetY;
                 }
 
                 const oldX = player.x;
@@ -1834,7 +1842,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (isMaze) {
             player.x = 0; player.y = 0;
         } else {
-            const isBlocked = (isTown && checkTownCollision(player.x, player.y)) || checkDynamicCollision(this.state, player.x, player.y);
+            // Use generous 0.5 serverRadius for startup validation so players don't spawn stuck in walls
+            const isBlocked = (isTown && checkTownCollision(player.x, player.y, 0.5)) || checkDynamicCollision(this.state, player.x, player.y, 0.5);
             if (isBlocked) { player.x = 0; player.y = 20; }
         }
 
@@ -1944,7 +1953,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (player.mp < player.maxMp && !player.isAuraActive) player.mp = Math.min(player.mp + 2.0 * dt, player.maxMp);
                 }
 
-                // --- NEW: DYNAMIC MOVEMENT SPEED & STARVATION PENALTY ---
+                // --- DYNAMIC MOVEMENT SPEED & STARVATION PENALTY ---
                 let currentSpeed = 12.0;
                 
                 // Add up all speed bonuses from equipped armor/weapons
@@ -2855,8 +2864,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         let nX = enemy.x + Math.cos(angle) * moveD; let nY = enemy.y + Math.sin(angle) * moveD;
                         
                         if (nX*nX + enemy.y*enemy.y < 14400) { 
-                            if (!((isTown && checkTownCollision(nX, enemy.y)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
-                            if (!((isTown && checkTownCollision(enemy.x, nY)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
+                            if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
+                            if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
                         } else { 
                             enemy.x = nX; enemy.y = nY; 
                         }
@@ -2880,8 +2889,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         let nX = enemy.x + Math.cos(angle) * moveD; let nY = enemy.y + Math.sin(angle) * moveD;
                         
                         if (nX*nX + enemy.y*enemy.y < 14400) { 
-                            if (!((isTown && checkTownCollision(nX, enemy.y)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
-                            if (!((isTown && checkTownCollision(enemy.x, nY)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
+                            if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
+                            if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
                         } else { 
                             enemy.x = nX; enemy.y = nY; 
                         }
@@ -2891,7 +2900,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (isNaN(enemy.targetX) || distSq(enemy.x, enemy.y, enemy.targetX, enemy.targetY) < 1.0) {
                         for(let i=0; i<5; i++) {
                             const tx = enemy.x + (Math.random() - 0.5) * 60; const ty = enemy.y + (Math.random() - 0.5) * 60;
-                            if (tx*tx + ty*ty >= 10000 && !((isTown && checkTownCollision(tx, ty)) || (isMaze && checkMazeCollision(tx, ty)) || (isUnderworld && checkUnderworldCollision(tx, ty)))) { 
+                            if (tx*tx + ty*ty >= 10000 && !((isTown && checkTownCollision(tx, ty, 0.5)) || (isMaze && checkMazeCollision(tx, ty)) || (isUnderworld && checkUnderworldCollision(tx, ty)))) { 
                                 enemy.targetX = tx; enemy.targetY = ty; break; 
                             }
                         }
@@ -2903,8 +2912,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     let nX = enemy.x + Math.cos(angle) * moveD; let nY = enemy.y + Math.sin(angle) * moveD;
                     
                     if (nX*nX + enemy.y*enemy.y < 14400) { 
-                        if (!((isTown && checkTownCollision(nX, enemy.y)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
-                        if (!((isTown && checkTownCollision(enemy.x, nY)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
+                        if (!((isTown && checkTownCollision(nX, enemy.y, 0.5)) || (isMaze && checkMazeCollision(nX, enemy.y)) || (isUnderworld && checkUnderworldCollision(nX, enemy.y)))) enemy.x = nX; 
+                        if (!((isTown && checkTownCollision(enemy.x, nY, 0.5)) || (isMaze && checkMazeCollision(enemy.x, nY)) || (isUnderworld && checkUnderworldCollision(enemy.x, nY)))) enemy.y = nY; 
                     } else { 
                         enemy.x = nX; enemy.y = nY; 
                     }
