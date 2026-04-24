@@ -601,6 +601,8 @@ export class TownRoom extends BaseRoom<TownState> {
                         this.markPlayerDirty(client.sessionId);
                         client.send("fishingResult", { success: true, item: caughtItem });
                         
+                        this.progressQuest(p3, "action", "catch_fish", 1, client);
+                        
                     }, 1000); // 1 second reel time
 
                 }, catchTime); // Random wait time
@@ -1065,7 +1067,6 @@ export class TownRoom extends BaseRoom<TownState> {
     }
 
     private generateWorld() {
-        // We restored this back to 2000 since the payload size wasn't the issue!
         for (let i = 0; i < 2000; i++) {
             const x = (Math.random() - 0.5) * (WORLD_RADIUS * 2); 
             const z = (Math.random() - 0.5) * (WORLD_RADIUS * 2);
