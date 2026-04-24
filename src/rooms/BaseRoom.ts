@@ -1688,15 +1688,21 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         p.inventory.forEach(item => inv.push({ name: item.name, quantity: item.quantity, desc: item.desc }));
         const passives: Record<string, number> = {}; 
         p.skillTree.unlockedPassives.forEach((v, k) => passives[k] = v);
-        const abilities: Record<string, any> = {}; 
+
+        // FIXED: Deep merge prevention for Active Abilities
+        const abilitiesList: any[] = []; 
         p.skillTree.activeAbilities.forEach((a, k) => {
             const upgs: Record<string, any> = {}; 
             a.upgrades.forEach((u, uk) => upgs[uk] = { id: u.id, unlocked: u.unlocked, currentRank: u.currentRank, maxRank: u.maxRank });
-            abilities[k] = { id: a.id, baseLevel: a.baseLevel, rank: a.rank, level: a.level, proficiency: a.proficiency, unconsolidatedProficiency: a.unconsolidatedProficiency, upgrades: upgs };
+            abilitiesList.push({ abilityKey: k, id: a.id, baseLevel: a.baseLevel, rank: a.rank, level: a.level, proficiency: a.proficiency, unconsolidatedProficiency: a.unconsolidatedProficiency, upgrades: upgs });
         });
 
-        const savedActiveQuests: Record<string, any> = {};
-        p.activeQuests.forEach((q, k) => { savedActiveQuests[k] = { currentAmount: q.currentAmount, isCompleted: q.isCompleted }; });
+        // FIXED: Deep merge prevention for Quests
+        const savedActiveQuests: any[] = [];
+        p.activeQuests.forEach((q, k) => { 
+            savedActiveQuests.push({ questId: k, currentAmount: q.currentAmount, isCompleted: q.isCompleted }); 
+        });
+        
         const savedCompletedQuests = Array.from(p.completedQuests);
         
         try { 
@@ -1707,7 +1713,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 x: p.x, y: p.y, hp: p.hp, mp: p.mp, stamina: p.stamina, maxStamina: p.maxStamina, hunger: p.hunger, maxHunger: p.maxHunger, coins: p.coins, 
                 manaLevel: p.manaLevel, auraStrength: p.auraStrength, auraControl: p.auraControl, auraStyle: p.auraStyle, meditationCount: p.meditationCount,
                 inventory: inv, equippedItem: p.equippedItem, equipHead: p.equipHead, equipChest: p.equipChest, equipBack: p.equipBack, equipLegs: p.equipLegs, equipFeet: p.equipFeet, equipOffHand: p.equipOffHand, 
-                skillTree: { unspentEssencePoints: p.skillTree.unspentEssencePoints, unspentAwakeningPoints: p.skillTree.unspentAwakeningPoints, unlockedPassives: passives, activeAbilities: abilities },
+                skillTree: { unspentEssencePoints: p.skillTree.unspentEssencePoints, unspentAwakeningPoints: p.skillTree.unspentAwakeningPoints, unlockedPassives: passives, activeAbilities: abilitiesList },
                 shadowSouls: (p as any).shadowSouls || 0,
                 activeQuests: savedActiveQuests,
                 completedQuests: savedCompletedQuests,
@@ -1803,21 +1809,42 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     player.skillTree.unspentEssencePoints = d.skillTree.unspentEssencePoints || 0; player.skillTree.unspentAwakeningPoints = d.skillTree.unspentAwakeningPoints || 0;
                     if (d.skillTree.unlockedPassives) { for (const [k, v] of Object.entries(d.skillTree.unlockedPassives)) player.skillTree.unlockedPassives.set(k, v as number); }
                     if (d.skillTree.activeAbilities) {
-                        for (const [k, v] of Object.entries(d.skillTree.activeAbilities)) {
-                            const data = v as any; const ability = new ActiveAbility(); 
-                            ability.id = data.id; ability.baseLevel = data.baseLevel; ability.rank = data.rank || "Iron"; ability.level = data.level || 0; ability.proficiency = data.proficiency || 0.0; ability.unconsolidatedProficiency = data.unconsolidatedProficiency || 0.0;
-                            if (data.upgrades) { for (const [upk, upv] of Object.entries(data.upgrades)) { const up = upv as any; const upgrade = new SkillUpgrade(); upgrade.id = up.id; upgrade.unlocked = up.unlocked; upgrade.currentRank = up.currentRank; upgrade.maxRank = up.maxRank; ability.upgrades.set(upk, upgrade); } }
-                            player.skillTree.activeAbilities.set(k, ability);
+                        // FIXED: Ability Array Loading
+                        if (Array.isArray(d.skillTree.activeAbilities)) {
+                            d.skillTree.activeAbilities.forEach((data: any) => {
+                                const ability = new ActiveAbility(); 
+                                ability.id = data.id; ability.baseLevel = data.baseLevel; ability.rank = data.rank || "Iron"; ability.level = data.level || 0; ability.proficiency = data.proficiency || 0.0; ability.unconsolidatedProficiency = data.unconsolidatedProficiency || 0.0;
+                                if (data.upgrades) { for (const [upk, upv] of Object.entries(data.upgrades)) { const up = upv as any; const upgrade = new SkillUpgrade(); upgrade.id = up.id; upgrade.unlocked = up.unlocked; upgrade.currentRank = up.currentRank; upgrade.maxRank = up.maxRank; ability.upgrades.set(upk, upgrade); } }
+                                player.skillTree.activeAbilities.set(data.abilityKey || data.id, ability);
+                            });
+                        } else {
+                            // Legacy load
+                            for (const [k, v] of Object.entries(d.skillTree.activeAbilities)) {
+                                const data = v as any; const ability = new ActiveAbility(); 
+                                ability.id = data.id; ability.baseLevel = data.baseLevel; ability.rank = data.rank || "Iron"; ability.level = data.level || 0; ability.proficiency = data.proficiency || 0.0; ability.unconsolidatedProficiency = data.unconsolidatedProficiency || 0.0;
+                                if (data.upgrades) { for (const [upk, upv] of Object.entries(data.upgrades)) { const up = upv as any; const upgrade = new SkillUpgrade(); upgrade.id = up.id; upgrade.unlocked = up.unlocked; upgrade.currentRank = up.currentRank; upgrade.maxRank = up.maxRank; ability.upgrades.set(upk, upgrade); } }
+                                player.skillTree.activeAbilities.set(k, ability);
+                            }
                         }
                     }
                 }
                 
                 if (d.completedQuests) { d.completedQuests.forEach((qId: string) => player.completedQuests.push(qId)); }
                 if (d.activeQuests) {
-                    for (const [k, v] of Object.entries(d.activeQuests)) {
-                        const data = v as any; const qState = new QuestProgressState();
-                        qState.questId = k; qState.currentAmount = data.currentAmount; qState.isCompleted = data.isCompleted;
-                        player.activeQuests.set(k, qState);
+                    // FIXED: Quest Array Loading
+                    if (Array.isArray(d.activeQuests)) {
+                        d.activeQuests.forEach((data: any) => {
+                            const qState = new QuestProgressState();
+                            qState.questId = data.questId; qState.currentAmount = data.currentAmount; qState.isCompleted = data.isCompleted;
+                            player.activeQuests.set(data.questId, qState);
+                        });
+                    } else {
+                        // Legacy load
+                        for (const [k, v] of Object.entries(d.activeQuests)) {
+                            const data = v as any; const qState = new QuestProgressState();
+                            qState.questId = k; qState.currentAmount = data.currentAmount; qState.isCompleted = data.isCompleted;
+                            player.activeQuests.set(k, qState);
+                        }
                     }
                 }
             }
