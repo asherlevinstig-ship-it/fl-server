@@ -44,6 +44,9 @@ export class PlayerState extends Schema {
     @type("number") maxHp: number = 100;
     @type("number") mp: number = 100;
     @type("number") maxMp: number = 100;
+    
+    // Note: Stamina is now slaved to Hunger in the server engine, 
+    // but the properties remain synced for the client UI representation.
     @type("number") stamina: number = 100;
     @type("number") maxStamina: number = 100;
     @type("number") hunger: number = 100;
@@ -85,6 +88,9 @@ export class PlayerState extends Schema {
     @type("number") bobberZ: number = 0;
 
     @type("number") rootedUntil: number = 0;
+    
+    // --- Monarch Class Specifics ---
+    @type("number") shadowSouls: number = 0;
 
     // --- Collections & Nested States ---
     @type({ map: InventoryItemState }) inventory = new MapSchema<InventoryItemState>();

@@ -471,7 +471,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         this.onMessage("setSprint", (client, data) => {
             const player = this.state.players.get(client.sessionId);
             if (player && !player.isSleeping && !player.isMeditating && Date.now() >= player.rootedUntil) {
-                player.isSprinting = !!(data.isSprinting && player.hunger > 0 && player.stamina > 0);
+                player.isSprinting = !!(data.isSprinting && player.hunger > 0);
             }
         });
 
@@ -798,10 +798,13 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (def.stats) {
                         p.hp = Math.min(p.maxHp, p.hp + (def.stats.hp ?? 0));
                         p.mp = Math.min(p.maxMp, p.mp + (def.stats.mp ?? 0));
-                        p.stamina = Math.min(p.maxStamina, p.stamina + (def.stats.ap ?? 0));
-                        if (def.stats.hunger) p.hunger = Math.min(p.maxHunger, p.hunger + def.stats.hunger);
+                        const energyRestore = (def.stats.ap ?? 0) + (def.stats.hunger ?? 0);
+                        p.hunger = Math.min(p.maxHunger, p.hunger + energyRestore);
                     }
                     if (message.itemName.match(/Apple|Meat|Bread|Food|Mushroom|Berry/)) p.hunger = Math.min(p.maxHunger, p.hunger + 40);
+                    
+                    p.stamina = p.hunger;
+
                     if (inv.quantity <= 0) {
                         if (p.equippedItem === message.itemName) p.equippedItem = "";
                         p.inventory.delete(message.itemName);
@@ -1125,10 +1128,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
             const now = Date.now();
             if (now - (this.lastAttackTimes.get(client.sessionId) || 0) >= 600) {
-                if (player.stamina < 10 || player.hunger < 2) return;
+                if (player.hunger < 0.2) return;
 
-                player.stamina -= 10;
-                player.hunger -= 2;
+                player.hunger -= 0.2;
+                player.stamina = player.hunger;
                 this.lastAttackTimes.set(client.sessionId, now);
 
                 const lungeDist = 2.0;
@@ -1339,9 +1342,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (player && !player.isSleeping && !player.isMeditating && Date.now() >= player.rootedUntil) {
             if ((player as any).mountedFamiliarId !== "") return; // Cannot dodge while mounted
 
-            if (player.stamina >= 20 && player.hunger >= 5) {
-                player.stamina -= 20;
-                player.hunger -= 5;
+            if (player.hunger >= 0.5) {
+                player.hunger -= 0.5;
+                player.stamina = player.hunger;
                 this.addAbilityProficiency(player, "evasion", 0.5);
 
                 const dodgeDistance = 4.0;
@@ -1934,15 +1937,18 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             if (!player.isMeditating) {
                 if (player.isAuraActive) {
                     let mpDrain = Math.max(2.0, 5.0 + (player.auraStrength * 4.0) - (player.auraControl * 3.0));
-                    let stamDrain = Math.max(2.0, 5.0 + (player.auraStrength * 3.0) - (player.auraControl * 2.0));
+                    
+                    // DRASTICALLY reduced aura energy burn:
+                    let energyDrain = Math.max(0.1, 0.5 + (player.auraStrength * 0.2) - (player.auraControl * 0.15));
 
-                    if (player.auraStyle === "void") stamDrain *= 1.5;
+                    if (player.auraStyle === "void") energyDrain *= 1.5;
                     if (player.auraStyle === "sanctuary") mpDrain *= 1.5;
                     
-                    player.mp -= mpDrain * dt; player.stamina -= stamDrain * dt;
+                    player.mp -= mpDrain * dt; 
+                    player.hunger -= energyDrain * dt; 
 
-                    if (player.mp <= 0 || player.stamina <= 0) {
-                        player.mp = Math.max(0, player.mp); player.stamina = Math.max(0, player.stamina);
+                    if (player.mp <= 0 || player.hunger <= 0) {
+                        player.mp = Math.max(0, player.mp); player.hunger = Math.max(0, player.hunger);
                         player.isAuraActive = false;
                         this.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "aura_shatter", targetX: player.x, targetZ: player.y });
                     } else {
@@ -1961,17 +1967,18 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
 
                 if (player.isSprinting) {
-                    player.hunger -= 2.0 * dt; player.stamina -= 15.0 * dt;
-                    if (player.hunger <= 0 || player.stamina <= 0) {
-                        player.hunger = Math.max(0, player.hunger); player.stamina = Math.max(0, player.stamina); player.isSprinting = false;
+                    // VERY SLOW SPRINT BURN: ~11 minutes of CONTINUOUS sprinting to starve from 100
+                    player.hunger -= 0.15 * dt; 
+                    if (player.hunger <= 0) {
+                        player.hunger = 0; player.isSprinting = false;
                     }
                 } else {
-                    if (!player.isSleeping) { player.hunger -= 0.1 * dt; if (player.hunger < 0) player.hunger = 0; }
-                    if (player.stamina < player.maxStamina && !player.isAuraActive) {
-                        const recoveryRate = player.isSleeping ? 30.0 : 10.0;
-                        player.stamina = Math.min(player.stamina + recoveryRate * dt, player.maxStamina);
-                    }
+                    // BARELY NOTICEABLE PASSIVE BURN: ~2.7 hours to starve while just standing still
+                    if (!player.isSleeping) { player.hunger -= 0.01 * dt; if (player.hunger < 0) player.hunger = 0; }
                 }
+
+                // HARD SYNC: Stamina is now a perfect mirror of Hunger for the UI
+                player.stamina = player.hunger;
 
                 if (player.isSleeping) {
                     if (player.hp < player.maxHp) player.hp = Math.min(player.hp + 5.0 * dt, player.maxHp);
