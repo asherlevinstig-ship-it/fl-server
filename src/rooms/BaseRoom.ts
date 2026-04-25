@@ -138,6 +138,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     public static nextEventTime: number = Date.now() + (30 * 60 * 1000);
     public static nextEventName: string = "The Labyrinth"; 
     public static nextEventZone: string = "maze";
+    
+    // NEW: Global event tracking
+    public static isEventActive: boolean = false; 
+    private hasTriggeredCurrentEvent = false;
 
     public activeTeams = new Map<number, { leader: string, members: Set<string> }>();
 
@@ -418,6 +422,36 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     async onCreate(options: any) {
         
         setupTradeSystem(this);
+
+        // --- NEW: Global Event Manager Loop ---
+        setInterval(() => {
+            const now = Date.now();
+            const eventDurationMs = 5 * 60 * 1000; // Event stays open for 5 minutes
+
+            // 1. EVENT IS CURRENTLY ACTIVE
+            if (now >= BaseRoom.nextEventTime && now < BaseRoom.nextEventTime + eventDurationMs) {
+                BaseRoom.isEventActive = true;
+                
+                // Ensure this specific room instance broadcasts the invite exactly once
+                if (!this.hasTriggeredCurrentEvent) {
+                    this.triggerEventPull(BaseRoom.nextEventZone);
+                    this.hasTriggeredCurrentEvent = true;
+                }
+            } 
+            // 2. EVENT WINDOW CLOSED -> CYCLE TO NEXT EVENT
+            else if (now >= BaseRoom.nextEventTime + eventDurationMs) {
+                BaseRoom.isEventActive = false;
+                this.hasTriggeredCurrentEvent = false; // Reset for the next event
+
+                // Schedule next event (e.g., 25 minutes from now)
+                BaseRoom.nextEventTime = now + (25 * 60 * 1000);
+                const nextEvt = BaseRoom.availableEvents[Math.floor(Math.random() * BaseRoom.availableEvents.length)];
+                BaseRoom.nextEventName = nextEvt.name;
+                BaseRoom.nextEventZone = nextEvt.zone;
+
+                this.syncGlobalEvent(BaseRoom.nextEventName, BaseRoom.nextEventTime);
+            }
+        }, 1000);
 
         // --- PERFORMANCE: Background Firebase Save Loop (15s) ---
         setInterval(() => {
@@ -1939,7 +1973,18 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
         setTimeout(() => {
             if (this.clients.includes(client)) {
-                client.send("global_event_sync", { name: BaseRoom.nextEventName, remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) });
+                // If they log in while an event is running, invite them immediately!
+                if (BaseRoom.isEventActive) {
+                    client.send("event_invite", { 
+                        eventName: BaseRoom.nextEventName, 
+                        targetZone: BaseRoom.nextEventZone 
+                    });
+                } else {
+                    client.send("global_event_sync", { 
+                        name: BaseRoom.nextEventName, 
+                        remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) 
+                    });
+                }
             }
         }, 500);
 
