@@ -12,10 +12,10 @@ export class MazeRoom extends BaseRoom<TownState> {
         // 1. Initialize the universal physics, combat, and handlers from BaseRoom
         await super.onCreate(options); 
         
-        // 🚨 DO NOT call this.setState(new TownState()) here! 
-        // BaseRoom already created it. Calling it twice halts Colyseus state syncing.
+        // 2. Instantiate the State! BaseRoom relies on us to define the specific schema instance.
+        this.setState(new TownState());
 
-        // 2. Purge the invisible Town objects spawned by BaseRoom
+        // 3. Purge the invisible Town objects spawned by BaseRoom
         if (this.state.buildings) {
             this.state.buildings.clear();
         }
@@ -29,14 +29,14 @@ export class MazeRoom extends BaseRoom<TownState> {
         // Inject a flag so our CollisionSystem knows we are in the Maze
         (this.state as any).isMaze = true; 
 
-        // 3. Generate the exact same physical walls on the server using our fixed seed
+        // 4. Generate the exact same physical walls on the server using our fixed seed
         generateMaze(42);
 
-        // 4. Set the 10-minute DOOM TIMER authoritatively on the server
+        // 5. Set the 10-minute DOOM TIMER authoritatively on the server
         this.mazeEndTime = Date.now() + (10 * 60 * 1000);
         this.timeUpTriggered = false;
 
-        // 5. Server-side tick to check for Time Out and Exit Proximity
+        // 6. Server-side tick to check for Time Out and Exit Proximity
         // Inherit BaseRoom's tick rate to prevent the movement validator from rejecting client packets.
         this.setSimulationInterval((deltaTime) => {
             super.universalUpdate(deltaTime); // Keep handling stamina/mana regen and hazards
@@ -59,7 +59,7 @@ export class MazeRoom extends BaseRoom<TownState> {
                 return;
             }
 
-            // 6. The Win Condition (Reaching the Exit Beacon at 350, 350)
+            // 7. The Win Condition (Reaching the Exit Beacon at 350, 350)
             // By doing this in the update loop, we avoid overriding the "interact" message handler in BaseRoom
             if (!this.timeUpTriggered) {
                 this.state.players.forEach((player, sessionId) => {
