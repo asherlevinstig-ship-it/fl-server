@@ -144,6 +144,9 @@ export function checkTownCollision(x: number, y: number, r: number = 0.85): bool
 export function checkDynamicCollision(state: any, x: number, y: number, r: number = 0.85): boolean {
   if (!state) return false;
 
+  // 🚨 CRITICAL FIX: If we are in the Maze, abort checking dynamic Town objects!
+  if (state.isMaze) return false;
+
   if (distance(x, y, 35, -35) < r + 12.0) return true;
   if (distance(x, y, 1200, 0) < r + 16.0) return true;
 
@@ -274,11 +277,15 @@ export class SpatialGrid<T> {
 // --- MAZE COLLISION SYSTEM ---
 export let MAZE_COLLIDERS: {minX: number, maxX: number, minY: number, maxY: number}[] = [];
 
-// FIX: Standardized Park-Miller formula to fix the operator precedence bug
+// 🚨 CRITICAL FIX: Fortified Park-Miller formula to ensure identical 
+// map generation across the Client (V8) and Server (Node.js) environments.
 function seededRandom(seed: number) {
+    let s = seed;
     return function() {
-        seed = (seed * 48271) % 2147483647;
-        return seed / 2147483647;
+        s = Math.imul(s, 48271) | 0; // Force 32-bit integer multiplication
+        s = s % 2147483647;
+        if (s <= 0) s += 2147483646; // Prevent negative wrap-around
+        return s / 2147483647;
     }
 }
 
