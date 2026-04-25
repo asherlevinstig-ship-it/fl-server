@@ -14,6 +14,7 @@ export class MazeRoom extends BaseRoom<TownState> {
         
         // 2. Instantiate the State! BaseRoom relies on us to define the specific schema instance.
         this.setState(new TownState());
+        this.state.zoneName = "The Labyrinth";
 
         // 3. Purge the invisible Town objects spawned by BaseRoom
         if (this.state.buildings) {

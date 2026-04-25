@@ -125,7 +125,7 @@ export class TownRoom extends BaseRoom<TownState> {
 
         super.onCreate(options); 
         this.setState(new TownState());
-
+this.state.zoneName = "Aethelgard";
         try {
             console.log(`[TownRoom] Generating world scenery...`);
             this.generateWorld();

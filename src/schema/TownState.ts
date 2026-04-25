@@ -9,7 +9,11 @@ import { EnemyState } from "./EnemyState";
 import { LootState } from "./LootState"; 
 import { RealmEventState } from "./RealmEventState"; 
 import { FamiliarState } from "./FamiliarState";
+
 export class TownState extends Schema {
+  // --- ADDED: Authoritative Zone Name ---
+  @type("string") zoneName: string = "The Wilderness";
+
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
   @type({ map: SceneryState }) scenery = new MapSchema<SceneryState>();
   @type({ map: LandPlotState }) landPlots = new MapSchema<LandPlotState>();
@@ -19,5 +23,5 @@ export class TownState extends Schema {
   @type({ map: EnemyState }) enemies = new MapSchema<EnemyState>(); 
   @type({ map: LootState }) lootItems = new MapSchema<LootState>(); 
   @type({ map: RealmEventState }) realmEvents = new MapSchema<RealmEventState>(); 
-    @type({ map: FamiliarState }) familiars = new MapSchema<FamiliarState>();
+  @type({ map: FamiliarState }) familiars = new MapSchema<FamiliarState>();
 }
