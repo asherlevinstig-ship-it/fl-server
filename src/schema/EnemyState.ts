@@ -9,6 +9,7 @@ export class AfflictionState extends Schema {
 
 export class EnemyState extends Schema {
     @type("string") id: string = "";
+    @type("string") type: string = ""; // Added to sync the visual model type with the frontend
     @type("number") x: number = 0;
     @type("number") y: number = 0;
     @type("number") targetX: number = 0;

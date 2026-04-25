@@ -19,9 +19,7 @@ type AbilityMessage = {
 type SprintMessage = { isSprinting: boolean };
 type AuraStyleMessage = { style: string };
 
-// FIXED: Removed the generic parameter that was clashing with RoomOptions
 export class DungeonRoom extends Room {
-    // FIXED: Explicitly defined state to override Colyseus's base object type
     public state!: FloorFieldState;
 
     maxClients = 4;
@@ -32,6 +30,10 @@ export class DungeonRoom extends Room {
 
     private bossMinionsSummoned = 0;
     private frameCount = 0;
+
+    // --- NEW TIMER LOGIC ---
+    private dungeonTimer = 300; // 5 minutes (300 seconds)
+    private isDungeonFailed = false;
 
     public playerGrid = new SpatialGrid<PlayerState>(20);
     public enemyGrid = new SpatialGrid<EnemyState>(20);
@@ -58,7 +60,6 @@ export class DungeonRoom extends Room {
     onCreate(options: any) {
         console.log("DungeonRoom created!", options);
         
-        // Correctly initialize the Colyseus state
         this.setState(new FloorFieldState());
 
         this.onMessage("move", (client: Client, data: MoveMessage) => {
@@ -285,7 +286,6 @@ export class DungeonRoom extends Room {
         this.syncDungeonUI();
     }
 
-    // UPDATED: Now supports the proper disconnection code parameter
     async onLeave(client: Client, code?: number) {
         const player = this.state.players.get(client.sessionId);
 
@@ -303,6 +303,22 @@ export class DungeonRoom extends Room {
     private update(dt: number) {
         this.frameCount++;
         const dtSec = dt / 1000;
+
+        // --- PROGRESS COUNTDOWN TIMER ---
+        if (!this.isTransitioning && !this.isDungeonFailed) {
+            this.dungeonTimer -= dtSec;
+
+            // Sync the timer to the UI every 20 frames (roughly once a second)
+            if (this.frameCount % 20 === 0) {
+                this.syncDungeonUI();
+            }
+
+            // Time's up
+            if (this.dungeonTimer <= 0) {
+                this.triggerDungeonFail();
+                return; // Prevent further enemy updates
+            }
+        }
 
         if (this.isTransitioning) return;
 
@@ -421,6 +437,27 @@ export class DungeonRoom extends Room {
         });
     }
 
+    // --- DUNGEON FAIL BEHAVIOR ---
+    private triggerDungeonFail() {
+        this.isDungeonFailed = true;
+        this.isTransitioning = true; // Hard stop on enemies/waves
+
+        this.broadcast("dungeon_announcement", {
+            text: "TIME IS UP! THE UNDERWORLD CONSUMES YOU..."
+        });
+
+        // Give them 3 seconds to read their doom, then yeet to underworld
+        this.clock.setTimeout(() => {
+            this.state.players.forEach((player: any, sessionId: string) => {
+                const client = this.clients.find((c) => c.sessionId === sessionId);
+                if (client) {
+                    client.send("close_all_ui");
+                    client.send("server_event_teleport", { zone: "underworld" });
+                }
+            });
+        }, 3000);
+    }
+
     private triggerEnemyAttack(enemy: EnemyState, enemyId: string) {
         enemy.action = "telegraphing";
 
@@ -504,7 +541,7 @@ export class DungeonRoom extends Room {
     private checkWaveProgress() {
         this.syncDungeonUI();
 
-        if (this.state.enemies.size === 0 && !this.isTransitioning) {
+        if (this.state.enemies.size === 0 && !this.isTransitioning && !this.isDungeonFailed) {
             if (this.currentWave >= this.maxWaves) {
                 this.isTransitioning = true;
 
@@ -577,12 +614,14 @@ export class DungeonRoom extends Room {
 
                 if (this.currentWave === this.maxWaves && i === 0) {
                     enemy.name = "Goblin King";
+                    enemy.type = "goblin_king"; // Assigned type so the frontend builds the model
                     enemy.maxHp = 1500;
                     enemy.hp = 1500;
                     enemy.damage = 45;
                     enemy.speed = 6;
                 } else {
                     enemy.name = "Cave Goblin";
+                    enemy.type = "goblin"; // Assigned type so the frontend builds the model
                     enemy.maxHp = 100 + this.currentWave * 20;
                     enemy.hp = enemy.maxHp;
                     enemy.damage = 10 + this.currentWave * 2;
@@ -609,6 +648,7 @@ export class DungeonRoom extends Room {
             minion.x = bossX + Math.cos(angle) * radius;
             minion.y = bossZ + Math.sin(angle) * radius;
             minion.name = "Cave Goblin";
+            minion.type = "goblin"; // Assigned type
             minion.maxHp = 150;
             minion.hp = 150;
             minion.damage = 20;
@@ -626,7 +666,8 @@ export class DungeonRoom extends Room {
             wave: this.currentWave,
             maxWaves: this.maxWaves,
             enemiesLeft: this.state.enemies.size,
-            timeRemaining: 0
+            // Relay the remaining time (ceilinged to avoid decimals on frontend UI)
+            timeRemaining: Math.max(0, Math.ceil(this.dungeonTimer)) 
         });
     }
 

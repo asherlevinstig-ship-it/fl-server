@@ -20,14 +20,14 @@ import { syncFamiliars, updateFamiliars, handleFamiliarAbility } from "../Famili
 import { setupTradeSystem } from "./TradeController";
 
 import { 
-  WORLD_RADIUS,
-  checkTownCollision, 
-  checkMazeCollision,
-  checkUnderworldCollision,
-  checkDynamicCollision, 
-  distToSegmentSquared,
-  SpatialGrid,
-  TOWN_COLLIDERS
+    WORLD_RADIUS,
+    checkTownCollision, 
+    checkMazeCollision,
+    checkUnderworldCollision,
+    checkDynamicCollision, 
+    distToSegmentSquared,
+    SpatialGrid,
+    TOWN_COLLIDERS
 } from "../game/CollisionSystem";
 
 // --- PERFORMANCE: Fast Squared Distance Helper ---
@@ -396,12 +396,15 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
     public triggerEventPull(targetZone: string) {
         this.broadcast("server_event_log", {
-            html: `🔥 <b>${BaseRoom.nextEventName}</b> has opened! Prepare yourselves.`,
+            html: `🔥 <b>${BaseRoom.nextEventName}</b> has opened! Check your invites.`,
             type: "event-info"
         });
         
-        this.broadcast("close_all_ui");
-        this.broadcast("server_event_teleport", { zone: targetZone });
+        // Asks players instead of forcing a teleport
+        this.broadcast("event_invite", { 
+            eventName: BaseRoom.nextEventName, 
+            targetZone: targetZone 
+        }); 
     }
 
     public syncGlobalEvent(name: string, targetEpochTime: number) {
