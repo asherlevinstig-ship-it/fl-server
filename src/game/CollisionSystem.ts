@@ -99,8 +99,6 @@ for (let r = 0; r < MANSION_GRID.length; r++) {
 }
 
 // --- MATH HELPERS ---
-
-// NEW: Exported distSq so other files can use it!
 export function distSq(x1: number, y1: number, x2: number, y2: number): number {
     return (x1 - x2) ** 2 + (y1 - y2) ** 2;
 }
@@ -114,11 +112,23 @@ export function distToSegmentSquared(px: number, py: number, vx: number, vy: num
     if (l2 === 0) return distance(px, py, vx, vy) ** 2;
     let t = ((px - vx) * (wx - vx) + (py - vy) * (wy - vy)) / l2;
     t = Math.max(0, Math.min(1, t));
-    return distance(px, py, vx + t * (wx - vx), vy + t * (wy - vy)) ** 2;
+    return distance(px, py, vx + t * (wx - vx), vy + t * (wy - wy)) ** 2;
 }
 
 // --- COLLISION DETECTION ---
 export function checkTownCollision(x: number, y: number, r: number = 0.85): boolean {
+  // FIX: If MAZE_COLLIDERS exist, we are in the Maze. 
+  // We prioritize Maze walls and IGNORE Town walls to prevent ghost snapping.
+  if (MAZE_COLLIDERS.length > 0) {
+      for (const box of MAZE_COLLIDERS) {
+          if (x + r > box.minX && x - r < box.maxX && y + r > box.minY && y - r < box.maxY) {
+              return true;
+          }
+      }
+      return false; // Crucial: Skip the Town checks below if we are in the maze!
+  }
+
+  // Standard Town Collisions
   for (const box of TOWN_COLLIDERS) {
     if (x + r > box.minX && x - r < box.maxX && y + r > box.minY && y - r < box.maxY) return true;
   }
@@ -264,11 +274,11 @@ export class SpatialGrid<T> {
 // --- MAZE COLLISION SYSTEM ---
 export let MAZE_COLLIDERS: {minX: number, maxX: number, minY: number, maxY: number}[] = [];
 
-// A seeded random number generator so Client and Server generate the exact same maze
+// FIX: Standardized Park-Miller formula to fix the operator precedence bug
 function seededRandom(seed: number) {
     return function() {
-        seed = Math.imul(48271, seed) | 0 % 2147483647;
-        return (seed & 2147483647) / 2147483648;
+        seed = (seed * 48271) % 2147483647;
+        return seed / 2147483647;
     }
 }
 

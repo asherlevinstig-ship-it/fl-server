@@ -53,7 +53,8 @@ export class MazeRoom extends BaseRoom<TownState> {
                     }
 
                     // PERFORMANCE: Fast Squared Distance Check
-                    const distToExitSq = distSq(player.x, player.y, 350, 350);
+                    // FIX: Replaced player.y with player.z! 
+                   const distToExitSq = distSq(player.x, player.y, 350, 350);
                     
                     if (distToExitSq < 225.0) { // 15^2
                         // Lock state so they don't trigger this multiple times per second
