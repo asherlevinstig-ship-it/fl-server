@@ -447,6 +447,31 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             client.send("server_event_teleport", { zone: message.destination, x: message.x, z: message.z });
         });
 
+        this.onMessage("updateHotbar", (client, message: { slot: string, abilityId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (player) {
+                player.hotbar.set(message.slot, message.abilityId);
+                this.markPlayerDirty(client.sessionId);
+            }
+        });
+
+        // Add Handlers for Syncing Utility and Familiar Pathways
+        this.onMessage("changeUtilityPathway", (client, message: { pathwayId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (player) {
+                player.utilityPathway = message.pathwayId;
+                this.markPlayerDirty(client.sessionId);
+            }
+        });
+
+        this.onMessage("changeFamiliarPathway", (client, message: { pathwayId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (player) {
+                player.familiarPathway = message.pathwayId;
+                this.markPlayerDirty(client.sessionId);
+            }
+        });
+
         // Action Queue Population
         this.onMessage("move", (client, message: MoveMessage) => {
             this.actionQueue.push({ type: "move", client, data: message });
@@ -1710,10 +1735,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         });
         
         const savedCompletedQuests = Array.from(p.completedQuests);
+
+        const savedHotbar: Record<string, string> = {};
+        p.hotbar.forEach((abilityId, slot) => savedHotbar[slot] = abilityId);
         
         try { 
             await db.collection("players").doc(p.name).set({ 
                 sessionId: p.sessionId, name: p.name, classId: p.classId, pathwayId: p.pathwayId, 
+                utilityPathway: p.utilityPathway, familiarPathway: p.familiarPathway, 
                 rank: p.rank, level: p.level, experience: p.experience, experienceToNextLevel: p.experienceToNextLevel,
                 teamId: p.teamId, isTeamLeader: p.isTeamLeader, 
                 x: p.x, y: p.y, hp: p.hp, mp: p.mp, stamina: p.stamina, maxStamina: p.maxStamina, hunger: p.hunger, maxHunger: p.maxHunger, coins: p.coins, 
@@ -1723,6 +1752,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 shadowSouls: (p as any).shadowSouls || 0,
                 activeQuests: savedActiveQuests,
                 completedQuests: savedCompletedQuests,
+                hotbar: savedHotbar,
                 hasUnlockedAura: p.hasUnlockedAura,
                 hasUnlockedBuilding: p.hasUnlockedBuilding,
                 hasUnlockedSkillTree: p.hasUnlockedSkillTree
@@ -1738,6 +1768,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         player.name = options.name || `Player-${client.sessionId.slice(0, 4)}`;
         if (options.classId) player.classId = options.classId; 
         if (options.pathwayId) player.pathwayId = options.pathwayId;
+        
+        player.utilityPathway = "wayfinder";
+        player.familiarPathway = "apocalyptic_swarm";
         
         player.rank = "Iron";
         player.level = 1; player.experience = 0; player.experienceToNextLevel = 500;
@@ -1773,6 +1806,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 
                 if (d.classId !== undefined) player.classId = d.classId;
                 if (d.pathwayId !== undefined) player.pathwayId = d.pathwayId;
+                if (d.utilityPathway !== undefined) player.utilityPathway = d.utilityPathway; 
+                if (d.familiarPathway !== undefined) player.familiarPathway = d.familiarPathway; 
                 if (d.rank !== undefined) player.rank = d.rank;
                 if (d.level !== undefined) player.level = d.level;
                 if (d.experience !== undefined) player.experience = d.experience;
@@ -1852,6 +1887,21 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                             player.activeQuests.set(k, qState);
                         }
                     }
+                }
+
+                if (d.hotbar) {
+                    for (const [slot, abilityId] of Object.entries(d.hotbar)) {
+                        player.hotbar.set(slot, abilityId as string);
+                    }
+                } else {
+                    player.hotbar.set("slot2", "");
+                    player.hotbar.set("slot3", "");
+                    player.hotbar.set("slot4", "");
+                    player.hotbar.set("slot5", "");
+                    player.hotbar.set("slot6", "");
+                    player.hotbar.set("slot7", "");
+                    player.hotbar.set("slot8", "");
+                    player.hotbar.set("slot9", "");
                 }
             }
         } catch (err) {

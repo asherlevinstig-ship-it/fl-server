@@ -15,6 +15,10 @@ export class PlayerState extends Schema {
     @type("string") classId: string = "";
     @type("string") pathwayId: string = "";
 
+    // --- Secondary Pathways (Synced from UI) ---
+    @type("string") utilityPathway: string = "wayfinder";
+    @type("string") familiarPathway: string = "apocalyptic_swarm";
+
     // --- Progressive Unlocks (Onboarding) ---
     @type("boolean") hasUnlockedAura: boolean = false;
     @type("boolean") hasUnlockedBuilding: boolean = false;
@@ -96,7 +100,9 @@ export class PlayerState extends Schema {
     @type({ map: InventoryItemState }) inventory = new MapSchema<InventoryItemState>();
     @type(PlayerSkillTree) skillTree = new PlayerSkillTree();
     
-    // --- NEW: Quests ---
+    @type({ map: "string" }) hotbar = new MapSchema<string>();
+    
+    // --- Quests ---
     @type({ map: QuestProgressState }) activeQuests = new MapSchema<QuestProgressState>();
     @type(["string"]) completedQuests = new ArraySchema<string>();
 }
