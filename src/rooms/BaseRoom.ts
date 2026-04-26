@@ -1266,19 +1266,18 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             (player as any).lastProcessedInput = message.seq;
         }
 
-        // --- NEW: DYNAMIC TIME STEP (With Caps) ---
+        // --- FIXED: DYNAMIC TIME STEP (With Packet Batching Protection) ---
         const now = Date.now();
-        let dt = 0.05;
+        let dt = 0.05; // Default to 1 server tick
+        
         if (this.lastMoveTimes.has(client.sessionId)) {
-            dt = (now - this.lastMoveTimes.get(client.sessionId)!) / 1000;
+            const rawDt = (now - this.lastMoveTimes.get(client.sessionId)!) / 1000;
+            // If packets arrive instantly due to network batching, we still give them
+            // a minimum allowance of 1 server tick (0.05) to prevent false-positive clamps.
+            // Max capped at 0.4s to prevent lag-switch teleporting.
+            dt = Math.max(0.05, Math.min(rawDt, 0.4)); 
         }
         this.lastMoveTimes.set(client.sessionId, now);
-
-        // Cap dt to prevent massive speedhack leaps, but allow enough for normal internet jitter
-        dt = Math.max(0.05, Math.min(dt, 0.4));
-
-        const oldX = player.x;
-        const oldY = player.y;
 
         const isTown = this.roomName === "town" || this.constructor.name === "TownRoom";
         const isMaze = this.roomName === "maze" || this.constructor.name === "MazeRoom";
@@ -1294,7 +1293,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 let nextY = targetY;
 
                 if (!isFlying) {
-                    // Generous 0.5 server collision radius
                     const hitTownX = isTown && checkTownCollision(nextX, player.y, 0.5);
                     const hitDynX = checkDynamicCollision(this.state, nextX, player.y, 0.5);
                     const hitMazeX = isMaze && checkMazeCollision(nextX, player.y, 0.5);
@@ -1314,8 +1312,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 player.x = familiar.x;
                 player.y = familiar.y;
 
-                this.playerGrid.update(player, oldX, oldY, player.x, player.y);
-                this.familiarGrid.update(familiar, oldX, oldY, familiar.x, familiar.y);
+                this.playerGrid.update(player, player.x, player.y, player.x, player.y);
+                this.familiarGrid.update(familiar, familiar.x, familiar.y, familiar.x, familiar.y);
             } else {
                 (player as any).mountedFamiliarId = "";
                 (player as any).isFlying = false;
@@ -1325,8 +1323,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
         const moveSpeed = player.isSprinting ? player.movementSpeed * 1.6 : player.movementSpeed;
         
-        // Allowed distance includes speed * dynamic dt + a generous network buffer (2.5 units base)
-        const allowedDistSq = (moveSpeed * dt * 1.5 + 2.5) ** 2;
+        // Generous network buffer: 4.5 units base instead of 2.5
+        const allowedDistSq = (moveSpeed * dt * 1.5 + 4.5) ** 2;
         const requestedDistSq = distSq(player.x, player.y, targetX, targetY);
 
         const isWolf = player.isSpiritAnimal || this.activeHazards.some(h => h.type === "spirit_animal" && h.ownerId === client.sessionId);
@@ -1334,13 +1332,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         let serverX = player.x;
         let serverY = player.y;
         
-        // --- DEBUGGING TRACKER ---
         let debugReason = "";
         let nextX = targetX;
         let nextY = targetY;
 
         if (requestedDistSq > allowedDistSq) {
-            // NEW: RUBBER BAND CLAMPING INSTEAD OF VIOLENT REJECT
             const dist = Math.sqrt(requestedDistSq);
             const maxDist = Math.sqrt(allowedDistSq);
             const ratio = maxDist / dist;
@@ -1350,7 +1346,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
 
         if (!isWolf) {
-            // X-Axis Check (Forgiving 0.5 radius)
             const serverRadius = 0.5;
             const hitTownX = isTown && checkTownCollision(nextX, player.y, serverRadius);
             const hitDynX = checkDynamicCollision(this.state, nextX, player.y, serverRadius);
@@ -1361,10 +1356,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
             if (blockedX) {
                 nextX = player.x;
-                if (isTown) debugReason += `[X-Block: Town=${hitTownX}, Dynamic=${hitDynX}] `;
+                if (isTown) debugReason += `[X-Block] `;
             }
 
-            // Y-Axis Check (Forgiving 0.5 radius)
             const hitTownY = isTown && checkTownCollision(player.x, nextY, serverRadius);
             const hitDynY = checkDynamicCollision(this.state, player.x, nextY, serverRadius);
             const hitMazeY = isMaze && checkMazeCollision(player.x, nextY, serverRadius);
@@ -1374,7 +1368,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
             if (blockedY) {
                 nextY = player.y;
-                if (isTown) debugReason += `[Y-Block: Town=${hitTownY}, Dynamic=${hitDynY}] `;
+                if (isTown) debugReason += `[Y-Block] `;
             }
         }
 
@@ -1383,15 +1377,19 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
         const errorDistSq = distSq(targetX, targetY, serverX, serverY);
         
-        // Increase tolerance before snapping to 4 units
-        const TOLERANCE_SQ = 16.0; 
+        // FIXED: Increased tolerance from 16.0 (4 units) to 64.0 (8 units)
+        // 8 units allows a player with 150-200ms ping to comfortably round corners 
+        // without getting snapped back by the server predicting a wall hit.
+        const TOLERANCE_SQ = 64.0; 
 
+        const oldX = player.x;
+        const oldY = player.y;
         player.x = serverX;
         player.y = serverY;
         this.playerGrid.update(player, oldX, oldY, player.x, player.y);
 
         if (errorDistSq > TOLERANCE_SQ) {
-            console.warn(`[SNAP] ${player.name} snapped at X:${player.x.toFixed(1)}, Y:${player.y.toFixed(1)}. ErrorDistSq: ${errorDistSq.toFixed(2)}. Reason: ${debugReason}`);
+            console.warn(`[SNAP] ${player.name} snapped. ErrorDistSq: ${errorDistSq.toFixed(2)}. Reason: ${debugReason}`);
             client.send("forcePosition", { x: player.x, z: player.y });
         }
     }
