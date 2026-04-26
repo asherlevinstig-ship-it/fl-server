@@ -1,6 +1,7 @@
 import config from "@colyseus/tools";
 import express from "express";
 import cors from "cors";
+import path from "path";
 import authRoutes from "./auth";
 
 // --- CRITICAL FIX 1: INCREASE NETWORK BUFFER TO PREVENT STATE CORRUPTION ---
@@ -99,6 +100,9 @@ export default config({
 
     // 3. Parse JSON bodies (Must remain AFTER the CORS block)
     app.use(express.json());
+    
+    // --- ADDED: Serve the admin dashboard from the public folder ---
+    app.use(express.static(path.join(__dirname, "public")));
     
     // 4. Register your Auth routes
     app.use("/api", authRoutes);
