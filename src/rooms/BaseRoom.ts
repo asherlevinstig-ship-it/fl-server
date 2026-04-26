@@ -1266,15 +1266,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             (player as any).lastProcessedInput = message.seq;
         }
 
-        // --- FIXED: DYNAMIC TIME STEP (With Packet Batching Protection) ---
         const now = Date.now();
-        let dt = 0.05; // Default to 1 server tick
+        let dt = 0.05; 
         
         if (this.lastMoveTimes.has(client.sessionId)) {
             const rawDt = (now - this.lastMoveTimes.get(client.sessionId)!) / 1000;
-            // If packets arrive instantly due to network batching, we still give them
-            // a minimum allowance of 1 server tick (0.05) to prevent false-positive clamps.
-            // Max capped at 0.4s to prevent lag-switch teleporting.
             dt = Math.max(0.05, Math.min(rawDt, 0.4)); 
         }
         this.lastMoveTimes.set(client.sessionId, now);
@@ -1283,7 +1279,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         const isMaze = this.roomName === "maze" || this.constructor.name === "MazeRoom";
         const isUnderworld = this.roomName === "underworld" || this.constructor.name === "UnderworldRoom";
 
-        // --- MOUNT INTERCEPT ---
         const mountedFamiliarId = (player as any).mountedFamiliarId;
         if (mountedFamiliarId && mountedFamiliarId !== "") {
             const familiar = this.state.familiars?.get(mountedFamiliarId);
@@ -1318,12 +1313,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 (player as any).mountedFamiliarId = "";
                 (player as any).isFlying = false;
             }
-            return; // Skip normal player physics when mounted
+            return; 
         }
 
         const moveSpeed = player.isSprinting ? player.movementSpeed * 1.6 : player.movementSpeed;
         
-        // Generous network buffer: 4.5 units base instead of 2.5
         const allowedDistSq = (moveSpeed * dt * 1.5 + 4.5) ** 2;
         const requestedDistSq = distSq(player.x, player.y, targetX, targetY);
 
@@ -1345,6 +1339,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             debugReason += `[Clamped: Req ${dist.toFixed(1)} > Max ${maxDist.toFixed(1)}] `;
         }
 
+        let blockedX = false;
+        let blockedY = false;
+
         if (!isWolf) {
             const serverRadius = 0.5;
             const hitTownX = isTown && checkTownCollision(nextX, player.y, serverRadius);
@@ -1352,7 +1349,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             const hitMazeX = isMaze && checkMazeCollision(nextX, player.y, serverRadius);
             const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y, serverRadius);
             
-            const blockedX = hitTownX || hitDynX || hitMazeX || hitUnderX;
+            blockedX = hitTownX || hitDynX || hitMazeX || hitUnderX;
 
             if (blockedX) {
                 nextX = player.x;
@@ -1364,7 +1361,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             const hitMazeY = isMaze && checkMazeCollision(player.x, nextY, serverRadius);
             const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY, serverRadius);
             
-            const blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
+            blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
 
             if (blockedY) {
                 nextY = player.y;
@@ -1377,10 +1374,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
         const errorDistSq = distSq(targetX, targetY, serverX, serverY);
         
-        // FIXED: Increased tolerance from 16.0 (4 units) to 64.0 (8 units)
-        // 8 units allows a player with 150-200ms ping to comfortably round corners 
-        // without getting snapped back by the server predicting a wall hit.
         const TOLERANCE_SQ = 64.0; 
+        const DRIFT_TOLERANCE_SQ = 2.0;
 
         const oldX = player.x;
         const oldY = player.y;
@@ -1391,9 +1386,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (errorDistSq > TOLERANCE_SQ) {
             console.warn(`[SNAP] ${player.name} snapped. ErrorDistSq: ${errorDistSq.toFixed(2)}. Reason: ${debugReason}`);
             client.send("forcePosition", { x: player.x, z: player.y });
+        } else if ((blockedX || blockedY) && errorDistSq > DRIFT_TOLERANCE_SQ) {
+            // Silently correct wall-drifting to prevent the client from getting 8 units deep into a wall
+            client.send("forcePosition", { x: player.x, z: player.y });
         }
     }
-
    private processDodge(client: Client, message: DodgeMessage) {
         const player = this.state.players.get(client.sessionId);
         if (player && !player.isSleeping && !player.isMeditating && Date.now() >= player.rootedUntil) {
