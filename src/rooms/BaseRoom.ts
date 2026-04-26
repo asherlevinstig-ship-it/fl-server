@@ -30,7 +30,6 @@ import {
     TOWN_COLLIDERS
 } from "../game/CollisionSystem";
 
-// --- PERFORMANCE: Fast Squared Distance Helper ---
 function distSq(x1: number, y1: number, x2: number, y2: number): number {
     return (x1 - x2) ** 2 + (y1 - y2) ** 2;
 }
@@ -104,7 +103,6 @@ export interface IBaseState {
     familiars?: MapSchema<FamiliarState>;
 }
 
-// --- PERFORMANCE: Action Queue Types ---
 type QueuedAction = 
     | { type: "move", client: Client, data: MoveMessage }
     | { type: "attack", client: Client, data: AttackMessage }
@@ -126,7 +124,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     protected lastMoveTimes = new Map<string, number>();
     protected lastAttackTimes = new Map<string, number>();
 
-    // --- PERFORMANCE: Queues and Batches ---
     private actionQueue: QueuedAction[] = [];
     private dirtyPlayers = new Set<string>(); 
 
@@ -139,13 +136,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     public static nextEventName: string = "The Labyrinth"; 
     public static nextEventZone: string = "maze";
     
-    // NEW: Global event tracking
     public static isEventActive: boolean = false; 
     private hasTriggeredCurrentEvent = false;
 
     public activeTeams = new Map<number, { leader: string, members: Set<string> }>();
 
-    // --- PERFORMANCE: Interest Management Broadcast ---
     public broadcastNearby(x: number, y: number, radius: number, messageType: string, data: any) {
         const radiusSq = radius * radius;
         for (const p of this.playerGrid.getNearby(x, y, radius)) {
@@ -229,7 +224,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
-    // --- QUEST HELPER ENGINE ---
     public progressQuest(player: PlayerState, type: string, targetId: string, amount: number, client: Client | undefined) {
         if (!client) return;
 
@@ -304,7 +298,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         }
 
-        // --- Shadow Monarch Soul Extraction ---
         if (player.skillTree.activeAbilities.has("monarch_base")) {
             const capRank = player.skillTree.activeAbilities.get("monarch_base")?.upgrades.get("shadow_capacity")?.currentRank || 1;
             const maxSouls = capRank >= 4 ? 20 : (capRank >= 3 ? 10 : (capRank >= 2 ? 5 : 3));
@@ -404,7 +397,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             type: "event-info"
         });
         
-        // Asks players instead of forcing a teleport
         this.broadcast("event_invite", { 
             eventName: BaseRoom.nextEventName, 
             targetZone: targetZone 
@@ -416,34 +408,26 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         this.broadcast("global_event_sync", { name, remainingMs });
     }
 
-    // ==========================================
-    // CORE ROOM LIFECYCLE & BATCHING
-    // ==========================================
     async onCreate(options: any) {
         
         setupTradeSystem(this);
 
-        // --- NEW: Global Event Manager Loop ---
         setInterval(() => {
             const now = Date.now();
-            const eventDurationMs = 5 * 60 * 1000; // Event stays open for 5 minutes
+            const eventDurationMs = 5 * 60 * 1000; 
 
-            // 1. EVENT IS CURRENTLY ACTIVE
             if (now >= BaseRoom.nextEventTime && now < BaseRoom.nextEventTime + eventDurationMs) {
                 BaseRoom.isEventActive = true;
                 
-                // Ensure this specific room instance broadcasts the invite exactly once
                 if (!this.hasTriggeredCurrentEvent) {
                     this.triggerEventPull(BaseRoom.nextEventZone);
                     this.hasTriggeredCurrentEvent = true;
                 }
             } 
-            // 2. EVENT WINDOW CLOSED -> CYCLE TO NEXT EVENT
             else if (now >= BaseRoom.nextEventTime + eventDurationMs) {
                 BaseRoom.isEventActive = false;
-                this.hasTriggeredCurrentEvent = false; // Reset for the next event
+                this.hasTriggeredCurrentEvent = false; 
 
-                // Schedule next event (e.g., 25 minutes from now)
                 BaseRoom.nextEventTime = now + (25 * 60 * 1000);
                 const nextEvt = BaseRoom.availableEvents[Math.floor(Math.random() * BaseRoom.availableEvents.length)];
                 BaseRoom.nextEventName = nextEvt.name;
@@ -453,7 +437,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         }, 1000);
 
-        // --- PERFORMANCE: Background Firebase Save Loop (15s) ---
         setInterval(() => {
             if (this.dirtyPlayers.size > 0) {
                 const toSave = Array.from(this.dirtyPlayers);
@@ -467,7 +450,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         }, 15000); 
 
-        // --- PERFORMANCE: Main Server Game Loop (20 TPS) ---
         this.setSimulationInterval((deltaTime) => {
             this.processActionQueue();
             this.universalUpdate(deltaTime);
@@ -489,7 +471,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // Add Handlers for Syncing Utility and Familiar Pathways
         this.onMessage("changeUtilityPathway", (client, message: { pathwayId: string }) => {
             const player = this.state.players.get(client.sessionId);
             if (player) {
@@ -506,7 +487,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // Action Queue Population
         this.onMessage("move", (client, message: MoveMessage) => {
             this.actionQueue.push({ type: "move", client, data: message });
         });
@@ -658,12 +638,16 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             
             syncFamiliars(this);
 
-            // --- PROGRESS QUEST WHEN AWAKENING/SELECTING A SKILL ---
             this.progressQuest(player, "action", "select_ability", 1, client);
         });
 
-        this.onMessage("adminLevelUp", (client) => {
-            const player = this.state.players.get(client.sessionId);
+        this.onMessage("adminLevelUp", (client, message: any = {}) => {
+            if (!(client as any).isAdmin) {
+                client.send("hud_message", "Unauthorized access.");
+                return;
+            }
+            const targetId = message.targetSessionId || client.sessionId;
+            const player = this.state.players.get(targetId);
             if (!player) return;
             player.level += 1;
             player.skillTree.unspentAwakeningPoints += 1; 
@@ -671,18 +655,28 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             player.maxMp += 10; player.mp = player.maxMp;
             player.maxStamina += 10; player.stamina = player.maxStamina;
             player.maxHunger += 10; player.hunger = player.maxHunger;
-            this.markPlayerDirty(client.sessionId);
+            this.markPlayerDirty(targetId);
         });
 
-        this.onMessage("adminResetSkills", (client) => {
-            const player = this.state.players.get(client.sessionId);
+        this.onMessage("adminResetSkills", (client, message: any = {}) => {
+            if (!(client as any).isAdmin) {
+                client.send("hud_message", "Unauthorized access.");
+                return;
+            }
+            const targetId = message.targetSessionId || client.sessionId;
+            const player = this.state.players.get(targetId);
             if (!player) return;
             player.skillTree.activeAbilities.clear();
             player.skillTree.unspentAwakeningPoints = 5 + (player.level - 1);
-            this.activeHazards = this.activeHazards.filter(h => h.ownerId !== client.sessionId);
-            this.markPlayerDirty(client.sessionId);
-            
+            this.activeHazards = this.activeHazards.filter(h => h.ownerId !== targetId);
+            this.markPlayerDirty(targetId);
             syncFamiliars(this);
+        });
+
+        this.onMessage("adminTriggerEvent", (client) => {
+            if (!(client as any).isAdmin) return;
+            BaseRoom.nextEventTime = Date.now();
+            this.syncGlobalEvent(BaseRoom.nextEventName, BaseRoom.nextEventTime);
         });
 
         this.onMessage("createTeam", (client) => {
@@ -837,7 +831,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
                     const h: Hazard = {
                         id: `treasure_${Date.now()}`, type: "map_marker", ownerId: client.sessionId,
-                        x: targetX, y: targetZ, timer: 3600.0, rank: 1, // Lasts 1 hour
+                        x: targetX, y: targetZ, timer: 3600.0, rank: 1,
                         customData: { isTreasure: true }
                     };
                     this.activeHazards.push(h);
@@ -877,7 +871,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             const chest = this.state.decorations?.get(message.chestId);
             
             if (!p || !chest || p.isSleeping || p.isMeditating) return;
-            if (distSq(p.x, p.y, chest.x, chest.y) > 16.0) return; // 4^2
+            if (distSq(p.x, p.y, chest.x, chest.y) > 16.0) return;
 
             const invItem = p.inventory.get(message.itemName);
             if (invItem && invItem.quantity > 0) {
@@ -933,13 +927,13 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             const store = this.state.stores?.get(message.storeId);
             
             if (!p || !store || p.isSleeping || p.isMeditating) return;
-            if (distSq(p.x, p.y, store.x, store.y) > 36.0) return; // 6^2
+            if (distSq(p.x, p.y, store.x, store.y) > 36.0) return;
 
             const storeItem = store.inventory.get(message.itemName);
             if (!storeItem) return;
 
             const isOwned = !!store.ownerId;
-            if (isOwned && storeItem.stock <= 0) return; // Out of stock
+            if (isOwned && storeItem.stock <= 0) return;
 
             if (p.coins >= storeItem.price) {
                 p.coins -= storeItem.price;
@@ -969,14 +963,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             
             if (!p || !store || p.isSleeping || p.isMeditating) return;
             if (distSq(p.x, p.y, store.x, store.y) > 36.0) return;
-            if (store.ownerId) return; // Already owned
+            if (store.ownerId) return;
 
             const leaseCost = 1000;
             if (p.coins >= leaseCost) {
                 p.coins -= leaseCost;
                 store.ownerId = p.sessionId;
                 store.ownerName = p.name;
-                store.ownershipUntil = Date.now() + (14 * 24 * 60 * 60 * 1000); // 14 days
+                store.ownershipUntil = Date.now() + (14 * 24 * 60 * 60 * 1000);
                 store.vault = 0;
                 this.markPlayerDirty(client.sessionId);
             }
@@ -1040,7 +1034,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
-        // --- AURA & MEDITATION ---
         this.onMessage("toggle_aura", (client) => {
             const player = this.state.players.get(client.sessionId);
             if (player && !player.isSleeping && !player.isMeditating) {
@@ -1207,7 +1200,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 let hitSomething = false;
                 if (this.state.enemies) {
                     for (const enemy of this.enemyGrid.getNearby(attackX, attackZ, 3.5)) {
-                        if (distSq(enemy.x, enemy.y, attackX, attackZ) <= 12.25) { // 3.5^2
+                        if (distSq(enemy.x, enemy.y, attackX, attackZ) <= 12.25) {
                             enemy.hp -= 25; hitSomething = true;
                             this.broadcastNearby(enemy.x, enemy.y, 40, "playerAttacked", { id: enemy.id, targetX: enemy.x, targetZ: enemy.y, damage: 25, isCrit: false });
                             if (enemy.hp <= 0) { this.awardPlayerKill(player, enemy.name); this.removeEnemy(enemy.id); }
@@ -1221,9 +1214,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         });
     }
 
-    // ==========================================
-    // PERFORMANCE: Action Queue Processor
-    // ==========================================
     private processActionQueue() {
         const queueSize = this.actionQueue.length;
         for (let i = 0; i < queueSize; i++) {
@@ -1387,14 +1377,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             console.warn(`[SNAP] ${player.name} snapped. ErrorDistSq: ${errorDistSq.toFixed(2)}. Reason: ${debugReason}`);
             client.send("forcePosition", { x: player.x, z: player.y });
         } else if ((blockedX || blockedY) && errorDistSq > DRIFT_TOLERANCE_SQ) {
-            // Silently correct wall-drifting to prevent the client from getting 8 units deep into a wall
             client.send("forcePosition", { x: player.x, z: player.y });
         }
     }
+
    private processDodge(client: Client, message: DodgeMessage) {
         const player = this.state.players.get(client.sessionId);
         if (player && !player.isSleeping && !player.isMeditating && Date.now() >= player.rootedUntil) {
-            if ((player as any).mountedFamiliarId !== "") return; // Cannot dodge while mounted
+            if ((player as any).mountedFamiliarId !== "") return; 
 
             if (player.hunger >= 0.5) {
                 player.hunger -= 0.5;
@@ -1441,7 +1431,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         const player = this.state.players.get(client.sessionId);
         if (!player || player.isSleeping || player.isMeditating || Date.now() < player.rootedUntil) return;
 
-        // Auto-dismount on attack
         if ((player as any).mountedFamiliarId && (player as any).mountedFamiliarId !== "") {
             const familiar = this.state.familiars?.get((player as any).mountedFamiliarId);
             if (familiar) familiar.action = "orbiting";
@@ -1477,7 +1466,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
                 if (stealthRank >= 3 && this.state.enemies) {
                     for (const e of this.enemyGrid.getNearby(player.x, player.y, 6.0)) {
-                        if (distSq(e.x, e.y, player.x, player.y) <= 36.0) { // 6^2
+                        if (distSq(e.x, e.y, player.x, player.y) <= 36.0) {
                             e.hp -= 80;
                             applyAffliction(e, "Silence", 3.0, 0, 0);
                             this.broadcastNearby(e.x, e.y, 40, "playerAttacked", { id: e.id, targetX: e.x, targetZ: e.y, damage: 80, isCrit: true });
@@ -1493,7 +1482,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             
             if (this.state.enemies) {
                 for (const enemy of this.enemyGrid.getNearby(message.targetX, message.targetZ, 2.0)) {
-                    if (distSq(enemy.x, enemy.y, message.targetX, message.targetZ) <= 4.0) { // 2^2
+                    if (distSq(enemy.x, enemy.y, message.targetX, message.targetZ) <= 4.0) {
                         hitSomething = true;
                         this.addAbilityProficiency(player, "melee_combat", 1.5);
                         
@@ -1515,7 +1504,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                             this.broadcastNearby(enemy.x, enemy.y, 40, "abilityUsed", { id: enemy.id, abilityId: "divine_smite_silver", targetX: enemy.x, targetZ: enemy.y });
                             
                             for (const e of this.enemyGrid.getNearby(enemy.x, enemy.y, 4.0)) {
-                                if (e.id !== enemy.id && distSq(e.x, e.y, enemy.x, enemy.y) <= 16.0) { // 4^2
+                                if (e.id !== enemy.id && distSq(e.x, e.y, enemy.x, enemy.y) <= 16.0) {
                                     e.hp -= 50;
                                     this.broadcastNearby(e.x, e.y, 40, "playerAttacked", { id: e.id, targetX: e.x, targetZ: e.y, damage: 50, isCrit: true });
                                     if (e.hp <= 0) { this.awardPlayerKill(player, e.name); this.removeEnemy(e.id); }
@@ -1544,7 +1533,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                             
                             if ((enemy as any).bloodExplosionOnDeath) {
                                 for (const p of this.playerGrid.getNearby(enemy.x, enemy.y, 8.0)) {
-                                    if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) { // 8^2
+                                    if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) {
                                         p.hp = Math.min(p.maxHp, p.hp + 50);
                                     }
                                 }
@@ -1556,7 +1545,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
             }
 
-            // --- GEMINI CLONE ATTACK MIMICRY ---
             const familiarId = `fam_${client.sessionId}`;
             const familiar = this.state.familiars?.get(familiarId);
             if (familiar && familiar.type === "astral_reflection" && familiar.action === "orbiting" && familiar.hp > 0) {
@@ -1583,7 +1571,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             if (!hitSomething && this.state.scenery) {
                 let bestScenery: SceneryState | null = null;
                 let bestScore = -Infinity;
-                const attackRangeSq = 36.0; // 6^2
+                const attackRangeSq = 36.0;
                 
                 for (const scenery of this.sceneryGrid.getNearby(player.x, player.y, 6.0)) {
                     const dx = scenery.x - player.x; const dy = scenery.y - player.y; 
@@ -1638,7 +1626,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                             this.spawnDrop(bestScenery.x + (Math.random() - 0.5) * 1.5, bestScenery.y + (Math.random() - 0.5) * 1.5, lootName); 
                         }
 
-                        // Try to progress any 'gather' quests
                         this.progressQuest(player, "gather", isRock ? "Stone" : "Wood", 3, client); 
 
                         const originalScenery = new SceneryState();
@@ -1686,11 +1673,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (!player || player.isSleeping || player.isMeditating) return;
 
         for (const [id, loot] of this.state.lootItems.entries()) {
-            // Diablo Coin handling is done automatically via spatial lookup now. 
-            // We skip manual interactions with coins here to avoid double pickups.
             if (loot.kind.startsWith("Coin_")) continue;
 
-            if (distSq(player.x, player.y, loot.x, loot.y) <= 4.0) { // 2^2
+            if (distSq(player.x, player.y, loot.x, loot.y) <= 4.0) {
                 if (loot.kind === "chest" && !loot.isOpen) {
                     loot.isOpen = true;
                     player.coins += 50;
@@ -1731,15 +1716,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
-    // Call this whenever a player's core persistent state changes.
-    // It defers the DB save to the background loop.
     public markPlayerDirty(sessionId: string) {
         this.dirtyPlayers.add(sessionId);
     }
 
-    // ==========================================
-    // DECOUPLED DATABASE SAVING
-    // ==========================================
     private async savePlayerToDB(sessionId: string) {
         const p = this.state.players.get(sessionId); 
         if (!p) return;
@@ -1749,7 +1729,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         const passives: Record<string, number> = {}; 
         p.skillTree.unlockedPassives.forEach((v, k) => passives[k] = v);
 
-        // FIXED: Deep merge prevention for Active Abilities
         const abilitiesList: any[] = []; 
         p.skillTree.activeAbilities.forEach((a, k) => {
             const upgs: Record<string, any> = {}; 
@@ -1757,7 +1736,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             abilitiesList.push({ abilityKey: k, id: a.id, baseLevel: a.baseLevel, rank: a.rank, level: a.level, proficiency: a.proficiency, unconsolidatedProficiency: a.unconsolidatedProficiency, upgrades: upgs });
         });
 
-        // FIXED: Deep merge prevention for Quests
         const savedActiveQuests: any[] = [];
         p.activeQuests.forEach((q, k) => { 
             savedActiveQuests.push({ questId: k, currentAmount: q.currentAmount, isCompleted: q.isCompleted }); 
@@ -1791,7 +1769,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
-    async onJoin(client: Client, options: { name?: string, classId?: string, pathwayId?: string }) {
+    async onJoin(client: Client, options: { name?: string, classId?: string, pathwayId?: string, adminToken?: string }) {
+        if (options.adminToken && options.adminToken === process.env.ADMIN_TOKEN) {
+            (client as any).isAdmin = true;
+        }
+
         const player = new PlayerState(); 
         player.sessionId = client.sessionId; 
         player.name = options.name || `Player-${client.sessionId.slice(0, 4)}`;
@@ -1816,13 +1798,12 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         player.meditationCount = 0; player.rootedUntil = 0;
         player.skillTree.unspentEssencePoints = 2; player.skillTree.unspentAwakeningPoints = 5;
 
-        // NEW: Give the starter Wooden Sword!
         const starterSword = new InventoryItemState();
         starterSword.name = "Wooden Sword";
         starterSword.quantity = 1;
         starterSword.desc = ITEM_DB["Wooden Sword"]?.desc || "A basic training sword made of wood. Better than your fists. +2 ATK.";
         player.inventory.set("Wooden Sword", starterSword);
-        player.equippedItem = "Wooden Sword"; // Auto-equip it
+        player.equippedItem = "Wooden Sword"; 
         
         player.teamId = 0;
         player.isTeamLeader = false;
@@ -1879,7 +1860,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     player.skillTree.unspentEssencePoints = d.skillTree.unspentEssencePoints || 0; player.skillTree.unspentAwakeningPoints = d.skillTree.unspentAwakeningPoints || 0;
                     if (d.skillTree.unlockedPassives) { for (const [k, v] of Object.entries(d.skillTree.unlockedPassives)) player.skillTree.unlockedPassives.set(k, v as number); }
                     if (d.skillTree.activeAbilities) {
-                        // FIXED: Ability Array Loading
                         if (Array.isArray(d.skillTree.activeAbilities)) {
                             d.skillTree.activeAbilities.forEach((data: any) => {
                                 const ability = new ActiveAbility(); 
@@ -1888,7 +1868,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                                 player.skillTree.activeAbilities.set(data.abilityKey || data.id, ability);
                             });
                         } else {
-                            // Legacy load
                             for (const [k, v] of Object.entries(d.skillTree.activeAbilities)) {
                                 const data = v as any; const ability = new ActiveAbility(); 
                                 ability.id = data.id; ability.baseLevel = data.baseLevel; ability.rank = data.rank || "Iron"; ability.level = data.level || 0; ability.proficiency = data.proficiency || 0.0; ability.unconsolidatedProficiency = data.unconsolidatedProficiency || 0.0;
@@ -1901,7 +1880,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 
                 if (d.completedQuests) { d.completedQuests.forEach((qId: string) => player.completedQuests.push(qId)); }
                 if (d.activeQuests) {
-                    // FIXED: Quest Array Loading
                     if (Array.isArray(d.activeQuests)) {
                         d.activeQuests.forEach((data: any) => {
                             const qState = new QuestProgressState();
@@ -1909,7 +1887,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                             player.activeQuests.set(data.questId, qState);
                         });
                     } else {
-                        // Legacy load
                         for (const [k, v] of Object.entries(d.activeQuests)) {
                             const data = v as any; const qState = new QuestProgressState();
                             qState.questId = k; qState.currentAmount = data.currentAmount; qState.isCompleted = data.isCompleted;
@@ -1937,7 +1914,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             console.error("Error loading player from DB:", err);
         }
 
-        // --- NEW ACCOUNT QUEST INJECTION ---
         if (player.completedQuests.length === 0 && player.activeQuests.size === 0) {
             const firstQuest = new QuestProgressState();
             firstQuest.questId = "tutorial_0_ability";
@@ -1953,7 +1929,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (isMaze) {
             player.x = 0; player.y = 0;
         } else {
-            // Use generous 0.5 serverRadius for startup validation so players don't spawn stuck in walls
             const isBlocked = (isTown && checkTownCollision(player.x, player.y, 0.5)) || checkDynamicCollision(this.state, player.x, player.y, 0.5);
             if (isBlocked) { player.x = 0; player.y = 20; }
         }
@@ -1968,7 +1943,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
         setTimeout(() => {
             if (this.clients.includes(client)) {
-                // If they log in while an event is running, invite them immediately!
                 if (BaseRoom.isEventActive) {
                     client.send("event_invite", { 
                         eventName: BaseRoom.nextEventName, 
@@ -2016,19 +1990,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         client.send("global_event_sync", { name: BaseRoom.nextEventName, remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) });
     }
 
-    // ==========================================
-    // UNIVERSAL ENGINE LOOP (Vitals, Hazards, Enemies)
-    // ==========================================
     protected universalUpdate(deltaTime: number) {
         const dt = deltaTime / 1000; 
 
-        // --- 1. PLAYER VITALS ---
         this.state.players.forEach((player, sessionId) => {
             if (!player.isMeditating) {
                 if (player.isAuraActive) {
                     let mpDrain = Math.max(2.0, 5.0 + (player.auraStrength * 4.0) - (player.auraControl * 3.0));
                     
-                    // DRASTICALLY reduced aura energy burn:
                     let energyDrain = Math.max(0.1, 0.5 + (player.auraStrength * 0.2) - (player.auraControl * 0.15));
 
                     if (player.auraStyle === "void") energyDrain *= 1.5;
@@ -2057,17 +2026,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
 
                 if (player.isSprinting) {
-                    // VERY SLOW SPRINT BURN: ~11 minutes of CONTINUOUS sprinting to starve from 100
                     player.hunger -= 0.15 * dt; 
                     if (player.hunger <= 0) {
                         player.hunger = 0; player.isSprinting = false;
                     }
                 } else {
-                    // BARELY NOTICEABLE PASSIVE BURN: ~2.7 hours to starve while just standing still
                     if (!player.isSleeping) { player.hunger -= 0.01 * dt; if (player.hunger < 0) player.hunger = 0; }
                 }
 
-                // HARD SYNC: Stamina is now a perfect mirror of Hunger for the UI
                 player.stamina = player.hunger;
 
                 if (player.isSleeping) {
@@ -2079,18 +2045,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (player.mp < player.maxMp && !player.isAuraActive) player.mp = Math.min(player.mp + 2.0 * dt, player.maxMp);
                 }
 
-                // --- DYNAMIC MOVEMENT SPEED & STARVATION PENALTY ---
                 let currentSpeed = 12.0;
                 
-                // Add up all speed bonuses from equipped armor/weapons
                 [player.equippedItem, player.equipHead, player.equipChest, player.equipBack, player.equipLegs, player.equipFeet, player.equipOffHand].forEach(n => {
                     if (n && ITEM_DB[n]?.stats?.spd) currentSpeed += ITEM_DB[n].stats.spd;
                 });
                 
-                // Apply temporary buffs
                 if ((player as any).holySpeedBuff && Date.now() < (player as any).holySpeedBuff) currentSpeed += 2.4; 
                 
-                // Check for Whirlwind Aura
                 let hasWhirlwind = false;
                 for (const h of this.activeHazards) {
                     if (h.type === "whirlwind_aura" && h.ownerId === sessionId && h.rank >= 1) {
@@ -2099,29 +2061,24 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
                 if (hasWhirlwind) currentSpeed *= 1.5;
 
-                // 🔥 The Starvation Penalty
                 if (player.hunger <= 0) {
-                    currentSpeed *= 0.4; // Slow player down to 40% of their total speed
+                    currentSpeed *= 0.4; 
                     
-                    // Send a warning to the UI once when starvation begins
                     if (!(player as any).isStarvingMsgSent) {
                         (player as any).isStarvingMsgSent = true;
                         const client = this.clients.find(c => c.sessionId === sessionId);
                         if (client) client.send("hud_message", "⚠️ You are starving. Movement speed severely reduced.");
                     }
                 } else if ((player as any).isStarvingMsgSent) {
-                    // Reset the warning flag once they eat
                     (player as any).isStarvingMsgSent = false;
                 }
 
-                // Only update the network state if their speed actually changed to save bandwidth
                 if (player.movementSpeed !== currentSpeed) {
                     player.movementSpeed = currentSpeed;
                 }
             }
         });
 
-        // --- NEW: AUTO-PICKUP COINS ---
         for (const [id, loot] of this.state.lootItems.entries()) {
             if (loot.kind.startsWith("Coin_")) {
                 for (const p of this.playerGrid.getNearby(loot.x, loot.y, 2.0)) {
@@ -2133,13 +2090,12 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         
                         const client = this.clients.find(c => c.sessionId === p.sessionId);
                         if (client) client.send("coin_pickup", { amount });
-                        break; // Picked up, stop checking
+                        break; 
                     }
                 }
             }
         }
 
-        // --- 2. HAZARDS ---
         const removeHazardSync = (index: number) => {
             const hazardToRemove = this.activeHazards[index];
             if (hazardToRemove.type === "mana_pillar") {
@@ -2163,7 +2119,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     removeHazardSync(i);
                     continue;
                 }
-                if (owner && distSq(owner.x, owner.y, h.x, h.y) <= 2.25) { // 1.5^2
+                if (owner && distSq(owner.x, owner.y, h.x, h.y) <= 2.25) { 
                     if (h.customData.isCorrect) {
                         owner.mp = Math.min(owner.maxMp, owner.mp + 50);
                         this.broadcastNearby(h.x, h.y, 40, "abilityUsed", { id: owner.sessionId, abilityId: "mana_pillar_correct", targetX: h.x, targetZ: h.y });
@@ -2186,7 +2142,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 h.customData.tickTimer -= dt;
                 if (h.customData.tickTimer <= 0) {
                     h.customData.tickTimer = 1.0;
-                    let bestE = null; let bestDSq = 100.0; // 10 units
+                    let bestE = null; let bestDSq = 100.0; 
                     for (const e of this.enemyGrid.getNearby(h.x, h.y, 10.0)) {
                         if (e.hp <= 0) continue;
                         const dSq = distSq(e.x, e.y, h.x, h.y);
@@ -2195,7 +2151,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     
                     if (bestE) {
                         const angle = Math.atan2(bestE.y - h.y, bestE.x - h.x);
-                        if (bestDSq > 4.0) { // > 2 units
+                        if (bestDSq > 4.0) { 
                             h.x += Math.cos(angle) * 6.0 * dt;
                             h.y += Math.sin(angle) * 6.0 * dt;
                         } else {
@@ -2206,7 +2162,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         }
                     } else if (owner) {
                         const dSqOwner = distSq(h.x, h.y, owner.x, owner.y);
-                        if (dSqOwner > 16.0) { // > 4 units
+                        if (dSqOwner > 16.0) { 
                             const angle = Math.atan2(owner.y - h.y, owner.x - h.x);
                             h.x += Math.cos(angle) * 8.0 * dt;
                             h.y += Math.sin(angle) * 8.0 * dt;
@@ -2247,7 +2203,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 if (h.timer <= 0) {
                     (owner as any).stealthedUntil = 0;
                     
-                    // We only clear the stealth state here, universalUpdate handles speed calculation now.
                     const breakVisual = h.rank >= 3 ? "veil_of_shadows_burst" : "veil_of_shadows_break";
                     this.broadcastNearby(owner.x, owner.y, 50, "abilityUsed", { id: h.ownerId, abilityId: breakVisual, targetX: owner.x, targetZ: owner.y });
 
@@ -2320,7 +2275,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             else if (h.type === "town_portal") {
                 let used = false;
                 for (const p of this.playerGrid.getNearby(h.x, h.y, 2.0)) {
-                    if (!used && distSq(p.x, p.y, h.x, h.y) <= 2.25) { // 1.5^2
+                    if (!used && distSq(p.x, p.y, h.x, h.y) <= 2.25) { 
                         const oldX = p.x; const oldY = p.y;
                         p.x = 0; p.y = 20; 
                         this.playerGrid.update(p, oldX, oldY, p.x, p.y);
@@ -2353,7 +2308,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 if (h.customData.tickTimer <= 0) {
                     h.customData.tickTimer = 0.5;
                     for (const e of this.enemyGrid.getNearby(h.x, h.y, 20.0)) {
-                        if (distToSegmentSquared(e.x, e.y, h.x, h.y, h.customData.endX, h.customData.endZ) <= 16.0) { // 4^2
+                        if (distToSegmentSquared(e.x, e.y, h.x, h.y, h.customData.endX, h.customData.endZ) <= 16.0) { 
                             e.hp -= 15;
                             this.broadcastNearby(e.x, e.y, 40, "playerAttacked", { id: e.id, targetX: e.x, targetZ: e.y, damage: 15, isCrit: false, isDoT: true });
                             if (e.hp <= 0 && owner) { this.awardPlayerKill(owner, e.name); this.removeEnemy(e.id); }
@@ -2394,13 +2349,13 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     for (const e of this.enemyGrid.getNearby(h.x, h.y, checkR)) {
                         const dSq = distSq(e.x, e.y, h.x, h.y);
                         if (dSq <= checkR**2) {
-                            if (h.rank >= 2 && dSq > 2.25) { // 1.5^2
+                            if (h.rank >= 2 && dSq > 2.25) { 
                                 const pullDx = h.x - e.x; const pullDy = h.y - e.y;
                                 const pullDist = Math.sqrt(pullDx*pullDx + pullDy*pullDy) || 1;
                                 e.x += (pullDx / pullDist) * 2.0; e.y += (pullDy / pullDist) * 2.0;
                                 e.stunnedTimer = Math.max(e.stunnedTimer, 0.6); 
                             }
-                            if (dSq <= 25.0) { // 5^2
+                            if (dSq <= 25.0) { 
                                 e.hp -= 25; 
                                 this.broadcastNearby(e.x, e.y, 40, "playerAttacked", { id: e.id, targetX: e.x, targetZ: e.y, damage: 25, isCrit: false });
                                 if (e.hp <= 0) { this.awardPlayerKill(owner, e.name); this.removeEnemy(e.id); }
@@ -2738,37 +2693,33 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         }
 
-        // --- 3. ENEMIES ---
         if (this.state.enemies) {
             for (const [enemyId, enemy] of this.state.enemies.entries()) {
                 let nearestPlayer: any = null; 
-                let minDistSq = 625.0; // 25^2
+                let minDistSq = 625.0; 
                 let anyPlayerNear = false; 
                 
                 if (this.playerGrid.getNearby(enemy.x, enemy.y, 150).size > 0) anyPlayerNear = true;
                 if (!anyPlayerNear) continue; 
                 
-                // SERAPH AEGIS REPULSION LOGIC
                 let repelled = false;
                 if (this.state.familiars) {
                     for (const [, fam] of this.state.familiars.entries()) {
                         if (fam.type === "radiant_seraph" && fam.action === "deployed") {
-                            if (distSq(enemy.x, enemy.y, fam.x, fam.y) <= 16.0) { // If near the wall
+                            if (distSq(enemy.x, enemy.y, fam.x, fam.y) <= 16.0) { 
                                 const repDx = enemy.x - fam.x;
                                 const repDy = enemy.y - fam.y;
                                 const repDist = Math.sqrt(repDx*repDx + repDy*repDy) || 1;
                                 
-                                // Physically push the enemy back
                                 enemy.x += (repDx/repDist) * 8.0 * dt;
                                 enemy.y += (repDy/repDist) * 8.0 * dt;
                                 repelled = true;
                                 
-                                // Tier 7 Repel damage
                                 const owner = this.state.players.get(fam.ownerId);
                                 const aegisRank = owner?.skillTree.activeAbilities.get("aegis_branch")?.upgrades.get("divine_wall")?.currentRank || 0;
                                 if (aegisRank >= 2 && enemy.attackCooldown <= 0) {
                                     enemy.hp -= 20;
-                                    enemy.attackCooldown = 0.5; // Prevent multi-triggering
+                                    enemy.attackCooldown = 0.5; 
                                     this.broadcastNearby(enemy.x, enemy.y, 40, "playerAttacked", { id: enemy.id, targetX: enemy.x, targetZ: enemy.y, damage: 20 });
                                 }
                             }
@@ -2776,7 +2727,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     }
                 }
                 
-                // Only allow normal chasing if they weren't repelled into the wall
                 if (repelled) continue; 
                 
                 for (const player of this.playerGrid.getNearby(enemy.x, enemy.y, 25)) {
@@ -2787,7 +2737,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         continue; 
                     }
                     const dSq = distSq(enemy.x, enemy.y, player.x, player.y);
-                    if (dSq < minDistSq && distSq(0, 0, player.x, player.y) >= 10000) { // 100^2
+                    if (dSq < minDistSq && distSq(0, 0, player.x, player.y) >= 10000) { 
                         minDistSq = dSq; nearestPlayer = player; 
                     }
                 }
@@ -2830,7 +2780,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
                                 if ((enemy as any).bloodExplosionOnDeath) {
                                     for (const p of this.playerGrid.getNearby(enemy.x, enemy.y, 8.0)) {
-                                        if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) { // 8^2
+                                        if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) { 
                                             p.hp = Math.min(p.maxHp, p.hp + 50);
                                         }
                                     }

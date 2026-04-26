@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Administration</title>
+    <script src="https://unpkg.com/colyseus.js@^0.15.0/dist/colyseus.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f4f4f9;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .panel {
+            background: white;
+            padding: 24px;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        h2 {
+            margin-top: 0;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            font-size: 1.2rem;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 15px;
+        }
+        label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 0.9rem;
+        }
+        input {
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 1rem;
+        }
+        button {
+            padding: 10px 15px;
+            background: #0066cc;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        button:hover {
+            background: #004c99;
+        }
+        .action-row {
+            display: flex;
+            gap: 10px;
+        }
+        .status-text {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        .connected { color: #2ecc71; }
+        .disconnected { color: #e74c3c; }
+    </style>
+</head>
+<body>
+
+    <h1>Server Administration</h1>
+
+    <div class="panel">
+        <h2>Connection Settings</h2>
+        <div class="form-group">
+            <label for="serverUrl">Server URL</label>
+            <input type="text" id="serverUrl" value="ws://localhost:2567">
+        </div>
+        <div class="form-group">
+            <label for="adminToken">Admin Password</label>
+            <input type="password" id="adminToken" placeholder="Enter security token">
+        </div>
+        <button id="connectBtn">Connect to Server</button>
+        <div class="status-text disconnected" id="statusDisplay">Status: Disconnected</div>
+    </div>
+
+    <div class="panel" id="controlsPanel" style="display: none;">
+        <h2>Player Management</h2>
+        <div class="form-group">
+            <label for="targetPlayer">Target Session ID</label>
+            <input type="text" id="targetPlayer" placeholder="Leave blank to target self (if spawned)">
+        </div>
+        <div class="action-row">
+            <button id="giveLevelBtn">Give Level</button>
+            <button id="resetSkillsBtn" style="background: #e67e22;">Reset Skills</button>
+        </div>
+        
+        <h2 style="margin-top: 30px;">World Events</h2>
+        <div class="action-row">
+            <button id="triggerEventBtn" style="background: #9b59b6;">Start Next Event Immediately</button>
+        </div>
+    </div>
+
+    <script>
+        let client;
+        let activeRoom;
+
+        document.getElementById('connectBtn').addEventListener('click', async () => {
+            const url = document.getElementById('serverUrl').value;
+            const token = document.getElementById('adminToken').value;
+            const statusEl = document.getElementById('statusDisplay');
+
+            statusEl.innerText = "Status: Connecting...";
+            statusEl.className = "status-text";
+            
+            client = new Colyseus.Client(url);
+
+            try {
+                // Connect to your primary room. Passing the token securely in the options payload.
+                activeRoom = await client.joinOrCreate("town", { 
+                    name: "Admin", 
+                    adminToken: token 
+                });
+                
+                statusEl.innerText = "Status: Connected as Admin";
+                statusEl.className = "status-text connected";
+                document.getElementById('controlsPanel').style.display = "block";
+
+                activeRoom.onLeave((code) => {
+                    statusEl.innerText = "Status: Disconnected";
+                    statusEl.className = "status-text disconnected";
+                    document.getElementById('controlsPanel').style.display = "none";
+                });
+
+            } catch (error) {
+                statusEl.innerText = "Status: Connection Failed - " + error.message;
+                statusEl.className = "status-text disconnected";
+            }
+        });
+
+        document.getElementById('giveLevelBtn').addEventListener('click', () => {
+            const targetId = document.getElementById('targetPlayer').value;
+            if (activeRoom) {
+                activeRoom.send("adminLevelUp", { targetSessionId: targetId });
+                alert("Level command sent.");
+            }
+        });
+
+        document.getElementById('resetSkillsBtn').addEventListener('click', () => {
+            const targetId = document.getElementById('targetPlayer').value;
+            if (activeRoom && confirm("Are you sure you want to reset this player's skills?")) {
+                activeRoom.send("adminResetSkills", { targetSessionId: targetId });
+                alert("Skill reset command sent.");
+            }
+        });
+
+        document.getElementById('triggerEventBtn').addEventListener('click', () => {
+            if (activeRoom) {
+                activeRoom.send("adminTriggerEvent");
+                alert("Event trigger command sent.");
+            }
+        });
+    </script>
+
+</body>
+</html>
