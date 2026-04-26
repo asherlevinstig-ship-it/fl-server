@@ -1769,8 +1769,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
-    async onJoin(client: Client, options: { name?: string, classId?: string, pathwayId?: string, adminToken?: string }) {
-        if (options.adminToken && options.adminToken === process.env.ADMIN_TOKEN) {
+async onJoin(client: Client, options: { name?: string, classId?: string, pathwayId?: string, adminToken?: string } = {}) {
+    if (options.adminToken && options.adminToken === process.env.ADMIN_TOKEN) {
             (client as any).isAdmin = true;
         }
 
