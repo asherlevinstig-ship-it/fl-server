@@ -101,9 +101,92 @@ export default config({
     // 3. Parse JSON bodies (Must remain AFTER the CORS block)
     app.use(express.json());
     
-    // --- ADDED: Serve the admin dashboard from the public folder ---
+    // --- Serve the admin dashboard from the public folder ---
     app.use(express.static(path.join(__dirname, "public")));
     
+    // --- ADMIN API ROUTES ---
+    app.post("/api/admin/update-player", async (req, res) => {
+      const { adminToken, playerName, action, payload } = req.body;
+
+      // 1. Verify Password
+      if (adminToken !== process.env.ADMIN_TOKEN) {
+        return res.status(403).json({ error: "Unauthorized: Invalid admin token." });
+      }
+
+      if (!playerName) {
+        return res.status(400).json({ error: "Player name is required." });
+      }
+
+      try {
+        const admin = require("firebase-admin");
+        const db = admin.firestore();
+        const playerRef = db.collection("players").doc(playerName);
+        const doc = await playerRef.get();
+
+        if (!doc.exists) {
+          return res.status(404).json({ error: `Player '${playerName}' not found in database.` });
+        }
+
+        const playerData = doc.data();
+
+        // 2. Handle specific admin actions
+        if (action === "give_level") {
+          await playerRef.update({
+            level: (playerData.level || 1) + 1,
+            hp: (playerData.maxHp || 100) + 10,
+            maxHp: (playerData.maxHp || 100) + 10,
+            mp: (playerData.maxMp || 100) + 10,
+            maxMp: (playerData.maxMp || 100) + 10,
+            "skillTree.unspentAwakeningPoints": (playerData.skillTree?.unspentAwakeningPoints || 0) + 1
+          });
+          return res.json({ success: true, message: `Granted 1 level to ${playerName}.` });
+        }
+
+        if (action === "reset_skills") {
+          await playerRef.update({
+            "skillTree.activeAbilities": {}, // Clears the object/map
+            "skillTree.unspentAwakeningPoints": 5 + ((playerData.level || 1) - 1)
+          });
+          return res.json({ success: true, message: `Reset skills for ${playerName}.` });
+        }
+
+        if (action === "give_item") {
+          const itemName = payload.itemName;
+          const amount = parseInt(payload.amount, 10) || 1;
+          
+          let currentInventory = playerData.inventory || [];
+          let itemFound = false;
+
+          // Check if they already have it
+          for (let i = 0; i < currentInventory.length; i++) {
+            if (currentInventory[i].name === itemName) {
+              currentInventory[i].quantity += amount;
+              itemFound = true;
+              break;
+            }
+          }
+
+          // If not, add new item
+          if (!itemFound) {
+            currentInventory.push({
+              name: itemName,
+              quantity: amount,
+              desc: "Granted by Admin."
+            });
+          }
+
+          await playerRef.update({ inventory: currentInventory });
+          return res.json({ success: true, message: `Gave ${amount}x ${itemName} to ${playerName}.` });
+        }
+
+        return res.status(400).json({ error: "Unknown action." });
+
+      } catch (err) {
+        console.error("Admin API Error:", err);
+        return res.status(500).json({ error: "Internal server error." });
+      }
+    });
+
     // 4. Register your Auth routes
     app.use("/api", authRoutes);
   },
