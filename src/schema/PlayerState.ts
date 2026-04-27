@@ -15,6 +15,13 @@ export class PlayerState extends Schema {
     @type("string") classId: string = "";
     @type("string") pathwayId: string = "";
 
+    // --- Base Appearance ---
+    @type("string") gender: string = "body1";
+    @type("string") skinColor: string = "#ffccaa";
+    @type("string") hairStyle: string = "short";
+    @type("string") hairColor: string = "#333333";
+    @type("string") eyeColor: string = "#00aaff";
+
     // --- Secondary Pathways (Synced from UI) ---
     @type("string") utilityPathway: string = "wayfinder";
     @type("string") familiarPathway: string = "apocalyptic_swarm";
