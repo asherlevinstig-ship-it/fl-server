@@ -1,11 +1,13 @@
 import { Room, Client } from "@colyseus/core";
 import { FloorFieldState } from "../schema/FloorFieldState";
-import { PlayerState } from "../schema/PlayerState";
+import { PlayerState, QuestProgressState } from "../schema/PlayerState";
 import { EnemyState, AfflictionState } from "../schema/EnemyState";
 import { InventoryItemState } from "../schema/InventoryItemState";
+import { ActiveAbility, SkillUpgrade } from "../schema/SkillState";
 import { ITEM_DB } from "../ItemDatabase";
 import { getSkillDef } from "../data/AbilityDatabase";
 import { SpatialGrid, distSq } from "../game/CollisionSystem";
+import { db } from "../db/firebase";
 
 type MoveMessage = { x: number; y: number };
 type DodgeMessage = { dx: number; dy: number };
@@ -31,7 +33,7 @@ export class DungeonRoom extends Room {
     private bossMinionsSummoned = 0;
     private frameCount = 0;
 
-    // --- NEW TIMER LOGIC ---
+    // --- TIMER LOGIC ---
     private dungeonTimer = 300; // 5 minutes (300 seconds)
     private isDungeonFailed = false;
 
@@ -101,7 +103,12 @@ export class DungeonRoom extends Room {
 
             let killedAny = false;
             const attackRangeSq = 9.0;
-            const damage = 25;
+            
+            // Factor in equipped weapon damage
+            let damage = 25;
+            if (player.equippedItem) {
+                damage += ITEM_DB[player.equippedItem]?.stats?.atk ?? 0;
+            }
 
             for (const enemy of this.enemyGrid.getNearby(player.x, player.y, 3.0)) {
                 if (distSq(enemy.x, enemy.y, player.x, player.y) <= attackRangeSq) {
@@ -206,6 +213,11 @@ export class DungeonRoom extends Room {
             }
 
             if (baseDamage === 0) return;
+            
+            // Factor in weapons for abilities too
+            if (player.equippedItem) {
+                baseDamage += Math.floor((ITEM_DB[player.equippedItem]?.stats?.atk ?? 0) * 0.5);
+            }
 
             const originX = isTargetedAoE ? data.targetX : player.x;
             const originZ = isTargetedAoE ? data.targetZ : player.y;
@@ -273,13 +285,152 @@ export class DungeonRoom extends Room {
         this.startNextWave();
     }
 
-    onJoin(client: Client, options: any) {
+    async onJoin(client: Client, options: any) {
         const player = new PlayerState();
         player.name = options.name || "Hero";
-        player.x = 0;
+        player.sessionId = client.sessionId;
+        
+        // Defaults
+        player.x = 0; 
         player.y = 0;
-        player.hp = 100;
+        player.hp = 100; 
         player.maxHp = 100;
+
+        // --- FETCH PLAYER DATA FROM FIREBASE ---
+        try {
+            const doc = await db.collection("players").doc(player.name).get();
+            if (doc.exists) {
+                const d = doc.data()!; 
+                
+                if (d.classId !== undefined) player.classId = d.classId;
+                if (d.pathwayId !== undefined) player.pathwayId = d.pathwayId;
+                if (d.utilityPathway !== undefined) player.utilityPathway = d.utilityPathway; 
+                if (d.familiarPathway !== undefined) player.familiarPathway = d.familiarPathway; 
+                
+                if (d.gender !== undefined) player.gender = d.gender;
+                if (d.skinColor !== undefined) player.skinColor = d.skinColor;
+                if (d.hairStyle !== undefined) player.hairStyle = d.hairStyle;
+                if (d.hairColor !== undefined) player.hairColor = d.hairColor;
+                if (d.eyeColor !== undefined) player.eyeColor = d.eyeColor;
+
+                if (d.rank !== undefined) player.rank = d.rank;
+                if (d.level !== undefined) player.level = d.level;
+                if (d.experience !== undefined) player.experience = d.experience;
+                if (d.experienceToNextLevel !== undefined) player.experienceToNextLevel = d.experienceToNextLevel;
+                
+                // Retain Dungeon spawn points regardless of DB location
+                player.x = 0; player.y = 0; 
+                
+                if (d.maxHp !== undefined) player.maxHp = d.maxHp;
+                player.hp = player.maxHp; // Heal on enter dungeon
+                
+                if (d.maxMp !== undefined) player.maxMp = d.maxMp;
+                player.mp = player.maxMp; 
+                
+                if (d.maxStamina !== undefined) player.maxStamina = d.maxStamina;
+                player.stamina = player.maxStamina;
+                
+                if (d.maxHunger !== undefined) player.maxHunger = d.maxHunger;
+                player.hunger = player.maxHunger;
+                
+                if (d.coins !== undefined) player.coins = d.coins;
+                if (d.manaLevel !== undefined) player.manaLevel = d.manaLevel;
+                if (d.auraStrength !== undefined) player.auraStrength = d.auraStrength;
+                if (d.auraControl !== undefined) player.auraControl = d.auraControl;
+                if (d.auraStyle !== undefined) player.auraStyle = d.auraStyle;
+                
+                if (d.equippedItem !== undefined) { 
+                    const loaded = d.equippedItem; 
+                    const def = ITEM_DB[loaded]; 
+                    player.equippedItem = (def?.type === "armor" || def?.type === "cosmetic") ? "" : loaded; 
+                }
+                
+                if (d.equipHead !== undefined) player.equipHead = d.equipHead; 
+                if (d.equipChest !== undefined) player.equipChest = d.equipChest; 
+                if (d.equipBack !== undefined) player.equipBack = d.equipBack; 
+                if (d.equipLegs !== undefined) player.equipLegs = d.equipLegs; 
+                if (d.equipFeet !== undefined) player.equipFeet = d.equipFeet; 
+                if (d.equipOffHand !== undefined) player.equipOffHand = d.equipOffHand;
+                
+                // Hydrate Inventory
+                if (d.inventory && Array.isArray(d.inventory)) { 
+                    d.inventory.forEach((inv: any) => { 
+                        const item = new InventoryItemState(); 
+                        item.name = inv.name; 
+                        item.quantity = inv.quantity; 
+                        item.desc = inv.desc; 
+                        player.inventory.set(inv.name, item); 
+                    }); 
+                }
+                
+                // Hydrate Skills & Abilities
+                if (d.skillTree) {
+                    player.skillTree.unspentEssencePoints = d.skillTree.unspentEssencePoints || 0; 
+                    player.skillTree.unspentAwakeningPoints = d.skillTree.unspentAwakeningPoints || 0;
+                    if (d.skillTree.unlockedPassives) { 
+                        for (const [k, v] of Object.entries(d.skillTree.unlockedPassives)) {
+                            player.skillTree.unlockedPassives.set(k, v as number); 
+                        }
+                    }
+                    if (d.skillTree.activeAbilities) {
+                        if (Array.isArray(d.skillTree.activeAbilities)) {
+                            d.skillTree.activeAbilities.forEach((data: any) => {
+                                const ability = new ActiveAbility(); 
+                                ability.id = data.id; 
+                                ability.baseLevel = data.baseLevel; 
+                                ability.rank = data.rank || "Iron"; 
+                                ability.level = data.level || 0; 
+                                ability.proficiency = data.proficiency || 0.0; 
+                                ability.unconsolidatedProficiency = data.unconsolidatedProficiency || 0.0;
+                                
+                                if (data.upgrades) { 
+                                    for (const [upk, upv] of Object.entries(data.upgrades)) { 
+                                        const up = upv as any; 
+                                        const upgrade = new SkillUpgrade(); 
+                                        upgrade.id = up.id; 
+                                        upgrade.unlocked = up.unlocked; 
+                                        upgrade.currentRank = up.currentRank; 
+                                        upgrade.maxRank = up.maxRank; 
+                                        ability.upgrades.set(upk, upgrade); 
+                                    } 
+                                }
+                                player.skillTree.activeAbilities.set(data.abilityKey || data.id, ability);
+                            });
+                        }
+                    }
+                }
+                
+                // Hydrate Quests
+                if (d.completedQuests) { 
+                    d.completedQuests.forEach((qId: string) => player.completedQuests.push(qId)); 
+                }
+                
+                if (d.activeQuests && Array.isArray(d.activeQuests)) {
+                    d.activeQuests.forEach((data: any) => {
+                        const qState = new QuestProgressState();
+                        qState.questId = data.questId; 
+                        qState.currentAmount = data.currentAmount; 
+                        qState.isCompleted = data.isCompleted;
+                        player.activeQuests.set(data.questId, qState);
+                    });
+                }
+                
+                // Hydrate Hotbar
+                if (d.hotbar) {
+                    for (const [slot, abilityId] of Object.entries(d.hotbar)) {
+                        player.hotbar.set(slot, abilityId as string);
+                    }
+                }
+            }
+        } catch (err) {
+            console.error("Error loading player from DB:", err);
+        }
+
+        // Apply bonus speed from gear
+        let bonusSpd = 0; 
+        const itemsToCheck = [player.equippedItem, player.equipHead, player.equipChest, player.equipBack, player.equipLegs, player.equipFeet, player.equipOffHand];
+        itemsToCheck.forEach(name => { if(name) bonusSpd += ITEM_DB[name]?.stats?.spd ?? 0; });
+        player.movementSpeed = 12.0 + bonusSpd; 
 
         this.state.players.set(client.sessionId, player);
         this.playerGrid.add(player, player.x, player.y);
@@ -291,12 +442,51 @@ export class DungeonRoom extends Room {
 
         if (player) {
             this.playerGrid.remove(player, player.x, player.y);
+            await this.savePlayerToDB(player);
         }
 
         this.state.players.delete(client.sessionId);
 
         if (this.state.players.size === 0) {
             this.disconnect();
+        }
+    }
+
+    // --- SAVE PROGRESS WHEN LEAVING DUNGEON ---
+    private async savePlayerToDB(p: PlayerState) {
+        if (!p) return;
+        
+        const inv: any[] = []; 
+        p.inventory.forEach(item => inv.push({ name: item.name, quantity: item.quantity, desc: item.desc }));
+        const passives: Record<string, number> = {}; 
+        p.skillTree.unlockedPassives.forEach((v, k) => passives[k] = v);
+
+        const abilitiesList: any[] = []; 
+        p.skillTree.activeAbilities.forEach((a, k) => {
+            const upgs: Record<string, any> = {}; 
+            a.upgrades.forEach((u, uk) => upgs[uk] = { id: u.id, unlocked: u.unlocked, currentRank: u.currentRank, maxRank: u.maxRank });
+            abilitiesList.push({ abilityKey: k, id: a.id, baseLevel: a.baseLevel, rank: a.rank, level: a.level, proficiency: a.proficiency, unconsolidatedProficiency: a.unconsolidatedProficiency, upgrades: upgs });
+        });
+        
+        const savedActiveQuests: any[] = [];
+        p.activeQuests.forEach((q, k) => { 
+            savedActiveQuests.push({ questId: k, currentAmount: q.currentAmount, isCompleted: q.isCompleted }); 
+        });
+
+        const savedHotbar: Record<string, string> = {};
+        p.hotbar.forEach((abilityId, slot) => savedHotbar[slot] = abilityId);
+        
+        try { 
+            await db.collection("players").doc(p.name).set({ 
+                hp: p.hp, mp: p.mp, stamina: p.stamina, hunger: p.hunger, coins: p.coins, 
+                inventory: inv, equippedItem: p.equippedItem, equipHead: p.equipHead, equipChest: p.equipChest, equipBack: p.equipBack, equipLegs: p.equipLegs, equipFeet: p.equipFeet, equipOffHand: p.equipOffHand, 
+                skillTree: { unspentEssencePoints: p.skillTree.unspentEssencePoints, unspentAwakeningPoints: p.skillTree.unspentAwakeningPoints, unlockedPassives: passives, activeAbilities: abilitiesList },
+                activeQuests: savedActiveQuests,
+                completedQuests: Array.from(p.completedQuests),
+                hotbar: savedHotbar,
+            }, { merge: true }); 
+        } catch (err) {
+            console.error("Failed to save player to DB:", err);
         }
     }
 
@@ -513,19 +703,41 @@ export class DungeonRoom extends Room {
 
             for (const player of this.playerGrid.getNearby(currentEnemy.x, currentEnemy.y, radius)) {
                 if (distSq(player.x, player.y, currentEnemy.x, currentEnemy.y) <= rSq) {
-                    player.hp -= damage;
+                    
+                    // Defense calculation
+                    let finalD = damage;
+                    let totalDef = 0;
+                    const equippedArmor = [player.equipHead, player.equipChest, player.equipBack, player.equipLegs, player.equipFeet, player.equipOffHand];
+                    equippedArmor.forEach(itemName => { if (itemName) totalDef += ITEM_DB[itemName]?.stats?.def ?? 0; });
+                    finalD = Math.max(1, finalD - totalDef);
+                    
+                    player.hp -= finalD;
 
                     this.broadcastNearby(player.x, player.y, 40, "playerAttacked", {
                         id: player.sessionId,
                         targetX: player.x,
                         targetZ: player.y,
-                        damage
+                        damage: finalD
                     });
 
                     if (player.hp <= 0) {
-                        this.broadcast("underworld_death", {
-                            message: "You were slain by the Horde..."
-                        });
+                        player.hp = player.maxHp; // Reset HP to prevent repeating death states
+                        const deadClient = this.clients.find(c => c.sessionId === player.sessionId);
+                        
+                        if (deadClient) {
+                            // Specifically trigger the fail state on the client who died
+                            deadClient.send("dungeon_failed", {
+                                message: "You were slain by the Horde..."
+                            });
+                        }
+                        
+                        // Move them far out of bounds so they stop taking continuous damage 
+                        // while the 3.5-second client-side death UI is showing
+                        const oldX = player.x;
+                        const oldY = player.y;
+                        player.x = -9999;
+                        player.y = -9999;
+                        this.playerGrid.update(player, oldX, oldY, player.x, player.y);
                     }
                 }
             }
@@ -569,6 +781,9 @@ export class DungeonRoom extends Room {
                             icon: itemDef ? itemDef.icon : "🌌"
                         });
                     }
+                    
+                    // Instantly push the new item to the database so it's not lost on teleport
+                    this.savePlayerToDB(player);
                 });
 
                 this.clock.setTimeout(() => {
