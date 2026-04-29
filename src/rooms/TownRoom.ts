@@ -1067,7 +1067,7 @@ this.state.zoneName = "Aethelgard";
     }
 
     private generateWorld() {
-        for (let i = 0; i < 2000; i++) {
+        for (let i = 0; i < 10000; i++) {
             const x = (Math.random() - 0.5) * (WORLD_RADIUS * 2); 
             const z = (Math.random() - 0.5) * (WORLD_RADIUS * 2);
             

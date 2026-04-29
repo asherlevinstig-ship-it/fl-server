@@ -49,6 +49,18 @@ export const QUEST_DB: Record<string, QuestDef> = {
         objectives: [
             { type: "gather", targetId: "Wood", requiredAmount: 3 }
         ],
-        rewards: { coins: 100, exp: 200 }
+        rewards: { coins: 100, exp: 200 },
+        nextQuestId: "tutorial_3_comms"
+    },
+    "tutorial_3_comms": {
+        id: "tutorial_3_comms",
+        title: "Survival 103: Communication",
+        giverName: "Lord Protector",
+        dialogue: "A lone wolf dies, but the pack survives. Hold <span class='hud-key'>Tab</span> to open your utility keys and press a number to Quick Chat, and use <span class='hud-key'>Shift</span> + <span class='hud-key'>Tab</span> to switch chat channels!",
+        objectives: [
+            { type: "action", targetId: "toggle_utility", requiredAmount: 1 },
+            { type: "action", targetId: "use_chat", requiredAmount: 1 }
+        ],
+        rewards: { coins: 150, exp: 200 }
     }
 };
