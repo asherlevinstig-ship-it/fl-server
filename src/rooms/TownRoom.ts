@@ -1099,6 +1099,7 @@ this.state.zoneName = "Aethelgard";
             item.hp = item.maxHp; 
             this.state.scenery.set(item.id, item); 
             this.sceneryGrid.add(item, item.x, item.y);
+            console.log(`[SERVER] World generation complete. Total Scenery in state: ${this.state.scenery.size}`);
         }
     }
 }
