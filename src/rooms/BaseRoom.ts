@@ -1360,10 +1360,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 if (isTown) debugReason += `[X-Block] `;
             }
 
-            const hitTownY = isTown && checkTownCollision(player.x, nextY, serverRadius);
-            const hitDynY = checkDynamicCollision(this.state, player.x, nextY, serverRadius);
-            const hitMazeY = isMaze && checkMazeCollision(player.x, nextY, serverRadius);
-            const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY, serverRadius);
+          // FIX: Validate Y against nextX so diagonal corner clipping is blocked
+const hitTownY = isTown && checkTownCollision(nextX, nextY, serverRadius);
+const hitDynY = checkDynamicCollision(this.state, nextX, nextY, serverRadius);
+const hitMazeY = isMaze && checkMazeCollision(nextX, nextY, serverRadius);
+const hitUnderY = isUnderworld && checkUnderworldCollision(nextX, nextY, serverRadius);
             
             blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
 
