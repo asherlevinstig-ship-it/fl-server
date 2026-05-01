@@ -1275,7 +1275,14 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         
         if (this.lastMoveTimes.has(client.sessionId)) {
             const rawDt = (now - this.lastMoveTimes.get(client.sessionId)!) / 1000;
-            dt = Math.max(0.05, Math.min(rawDt, 0.4)); 
+            // --- FIX 1: TIME DILATION BURST PREVENTION ---
+            // If rawDt is functionally 0, we are processing a backlog of network packets in the same server tick.
+            // Do not give them 50ms of free movement per packet, or they will blast through walls.
+            if (rawDt <= 0.001) {
+                dt = 0.016; // Standard 60fps frame budget for backlogged packets
+            } else {
+                dt = Math.max(0.016, Math.min(rawDt, 0.4)); 
+            }
         }
         this.lastMoveTimes.set(client.sessionId, now);
 
@@ -1360,11 +1367,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 if (isTown) debugReason += `[X-Block] `;
             }
 
-          // FIX: Validate Y against nextX so diagonal corner clipping is blocked
-const hitTownY = isTown && checkTownCollision(nextX, nextY, serverRadius);
-const hitDynY = checkDynamicCollision(this.state, nextX, nextY, serverRadius);
-const hitMazeY = isMaze && checkMazeCollision(nextX, nextY, serverRadius);
-const hitUnderY = isUnderworld && checkUnderworldCollision(nextX, nextY, serverRadius);
+            // FIX: Validate Y against nextX so diagonal corner clipping is blocked
+            const hitTownY = isTown && checkTownCollision(nextX, nextY, serverRadius);
+            const hitDynY = checkDynamicCollision(this.state, nextX, nextY, serverRadius);
+            const hitMazeY = isMaze && checkMazeCollision(nextX, nextY, serverRadius);
+            const hitUnderY = isUnderworld && checkUnderworldCollision(nextX, nextY, serverRadius);
             
             blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
 
@@ -1379,8 +1386,9 @@ const hitUnderY = isUnderworld && checkUnderworldCollision(nextX, nextY, serverR
 
         const errorDistSq = distSq(targetX, targetY, serverX, serverY);
         
-        const TOLERANCE_SQ = 64.0; 
-        const DRIFT_TOLERANCE_SQ = 2.0;
+        // --- FIX 2: WALL SLIDING TOLERANCE ---
+        const TOLERANCE_SQ = 64.0; // Keep the massive 8-unit desync catch for extreme lag
+        const SLIDE_TOLERANCE_SQ = 0.05; // Drop drift tolerance to near-zero for smooth AABB wall sliding
 
         const oldX = player.x;
         const oldY = player.y;
@@ -1391,7 +1399,7 @@ const hitUnderY = isUnderworld && checkUnderworldCollision(nextX, nextY, serverR
         if (errorDistSq > TOLERANCE_SQ) {
             console.warn(`[SNAP] ${player.name} snapped. ErrorDistSq: ${errorDistSq.toFixed(2)}. Reason: ${debugReason}`);
             client.send("forcePosition", { x: player.x, z: player.y });
-        } else if ((blockedX || blockedY) && errorDistSq > DRIFT_TOLERANCE_SQ) {
+        } else if ((blockedX || blockedY) && errorDistSq > SLIDE_TOLERANCE_SQ) {
             client.send("forcePosition", { x: player.x, z: player.y });
         }
     }
