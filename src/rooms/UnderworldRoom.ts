@@ -121,7 +121,13 @@ export class UnderworldRoom extends BaseRoom<TownState> {
            player.hunger = player.maxHunger;
            
            this.playerGrid.update(player, oldX, oldY, player.x, player.y);
-           client.send("forcePosition", { x: player.x, z: player.y });
+           
+           // ✅ SAFELY DELAYED
+           setTimeout(() => {
+               if (this.clients.includes(client)) {
+                   client.send("forcePosition", { x: player.x, z: player.y });
+               }
+           }, 500);
            
            (this as any).markPlayerDirty(client.sessionId);
        }

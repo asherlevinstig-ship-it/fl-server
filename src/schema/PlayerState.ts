@@ -104,12 +104,19 @@ export class PlayerState extends Schema {
     @type("number") shadowSouls: number = 0;
 
     // --- Collections & Nested States ---
-    @type({ map: InventoryItemState }) inventory = new MapSchema<InventoryItemState>();
-    @type(PlayerSkillTree) skillTree = new PlayerSkillTree();
+    @type({ map: InventoryItemState }) 
+    public inventory = new MapSchema<InventoryItemState>();
     
-    @type({ map: "string" }) hotbar = new MapSchema<string>();
+    @type(PlayerSkillTree) 
+    public skillTree = new PlayerSkillTree();
+    
+    @type({ map: "string" }) 
+    public hotbar = new MapSchema<string>();
     
     // --- Quests ---
-    @type({ map: QuestProgressState }) activeQuests = new MapSchema<QuestProgressState>();
-    @type(["string"]) completedQuests = new ArraySchema<string>();
+    @type({ map: QuestProgressState }) 
+    public activeQuests = new MapSchema<QuestProgressState>();
+    
+    @type(["string"]) 
+    public completedQuests = new ArraySchema<string>();
 }

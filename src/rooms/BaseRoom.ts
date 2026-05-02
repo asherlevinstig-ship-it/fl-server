@@ -1721,7 +1721,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         this.state.players.set(client.sessionId, player); 
         this.playerGrid.add(player, player.x, player.y);
 
-        setTimeout(() => {
+      setTimeout(() => {
             if (this.clients.includes(client)) {
                 if (BaseRoom.isEventActive) {
                     client.send("event_invite", { 
@@ -1735,9 +1735,16 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     });
                 }
             }
+            
+            // ✅ MOVED INSIDE THE TIMEOUT
+            // Now the frontend HUD is fully loaded before this arrives
+            this.broadcastNearby(player.x, player.y, 60, "server_event_log", { 
+                html: `👋 <b>${player.name}</b> joined the realm.`, 
+                type: "event-join" 
+            });
+            
         }, 500);
 
-        this.broadcastNearby(player.x, player.y, 60, "server_event_log", { html: `👋 <b>${player.name}</b> joined the realm.`, type: "event-join" });
         syncFamiliars(this);
     }
 
