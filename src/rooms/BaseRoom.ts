@@ -1256,6 +1256,15 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
     private processMove(client: Client, message: MoveMessage) {
         const player = this.state.players.get(client.sessionId);
+
+         console.log("[SERVER MOVE RECEIVED]", {
+        room: this.roomName,
+        className: this.constructor.name,
+        sessionId: client.sessionId,
+        hasPlayer: !!player,
+        message,
+        current: player ? { x: player.x, y: player.y } : null
+    });
         
         if (!player || player.isSleeping || player.isMeditating || Date.now() < player.rootedUntil) {
             if (player) client.send("forcePosition", { x: player.x, z: player.y });
