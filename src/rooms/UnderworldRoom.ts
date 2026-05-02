@@ -88,7 +88,7 @@ export class UnderworldRoom extends BaseRoom<TownState> {
                 
                 (player as any).isFalling = true;
                 
-                // MAGIC FIX: Force lock WASD natively in BaseRoom so they can't walk on thin air!
+                // Force lock WASD natively in BaseRoom so they can't walk on thin air
                 player.rootedUntil = Date.now() + 5000;
                 
                 const client = this.clients.find(c => c.sessionId === sessionId);
@@ -131,7 +131,7 @@ export class UnderworldRoom extends BaseRoom<TownState> {
        await super.onLeave(client, code);
    }
 
-    private handlePlayerDeath(victim: any, killer: any | null) {
+    private async handlePlayerDeath(victim: any, killer: any | null) {
         (victim as any).isFalling = false;
 
         const distSqFromCenter = victim.x * victim.x + victim.y * victim.y;
@@ -163,10 +163,28 @@ export class UnderworldRoom extends BaseRoom<TownState> {
 
         // Penalties
         victim.inventory.clear(); 
-        victim.level = Math.max(1, victim.level - 1);
-        victim.experience = 0;
-        victim.skillTree.unspentAwakeningPoints = Math.max(0, victim.skillTree.unspentAwakeningPoints - 1);
+
+        // Clear Worn Equipment
+        victim.equippedItem = "";
+        victim.equipHead = "";
+        victim.equipChest = "";
+        victim.equipBack = "";
+        victim.equipLegs = "";
+        victim.equipFeet = "";
+        victim.equipOffHand = "";
+
+        // Stat Penalty Sync
+        if (victim.level > 1) {
+            victim.level -= 1;
+            victim.experience = 0;
+            victim.experienceToNextLevel = Math.ceil(victim.experienceToNextLevel / 1.5);
+            victim.maxHp = Math.max(100, victim.maxHp - 10);
+            victim.maxMp = Math.max(100, victim.maxMp - 10);
+            victim.maxStamina = Math.max(100, victim.maxStamina - 10);
+            victim.maxHunger = Math.max(100, victim.maxHunger - 10);
+        }
         victim.hp = victim.maxHp; 
+        victim.skillTree.unspentAwakeningPoints = Math.max(0, victim.skillTree.unspentAwakeningPoints - 1);
 
         // Update DB save coordinates to Town (but DO NOT forcePosition them on the client yet!)
         const oldX = victim.x;
@@ -176,6 +194,9 @@ export class UnderworldRoom extends BaseRoom<TownState> {
         this.playerGrid.update(victim, oldX, oldY, victim.x, victim.y);
 
         (this as any).markPlayerDirty(victim.sessionId);
+
+        // AWAIT FIRM DATABASE SAVE FIRST to prevent race conditions on reconnect
+        await this.savePlayerToDB(victim.sessionId);
 
         const victimClient = this.clients.find(c => c.sessionId === victim.sessionId);
         if (victimClient) {
@@ -199,6 +220,9 @@ export class UnderworldRoom extends BaseRoom<TownState> {
             this.playerGrid.update(killer, kOldX, kOldY, killer.x, killer.y);
             (this as any).markPlayerDirty(killer.sessionId);
             
+            // Await the killer's save as well so they don't lose their 2000 XP / Items on transition
+            await this.savePlayerToDB(killer.sessionId);
+
             const killerClient = this.clients.find(c => c.sessionId === killer.sessionId);
             if (killerClient) {
                 killerClient.send("underworld_escape", { message: "🩸 Flawless Victory! You escape the Underworld." });

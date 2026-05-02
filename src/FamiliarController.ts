@@ -1,7 +1,8 @@
 import { PlayerState } from "./schema/PlayerState";
 import { FamiliarState } from "./schema/FamiliarState";
 import { EnemyState } from "./schema/EnemyState";
-import { BaseRoom, applyAffliction, Hazard, IBaseState } from "./rooms/BaseRoom";
+import { applyAffliction } from "./rooms/CombatController";
+import { BaseRoom, IBaseState, Hazard } from "./rooms/BaseRoom";
 
 // ==========================================
 // 0.17 CLIENT ABSTRACTION
