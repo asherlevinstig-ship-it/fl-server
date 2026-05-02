@@ -6,7 +6,7 @@ import { BuildingState } from "../schema/BuildingState";
 import { StoreState } from "../schema/StoreState";
 import { StoreItemState } from "../schema/StoreItemState";
 import { DecorationState } from "../schema/DecorationState";
-import { EnemyState } from "../schema/EnemyState";
+import { EnemyState, ENEMY_STATE_SCHEMA_VERSION } from "../schema/EnemyState";
 import { LootState } from "../schema/LootState"; 
 import { RealmEventState } from "../schema/RealmEventState";
 import { InventoryItemState } from "../schema/InventoryItemState";
@@ -121,6 +121,10 @@ export class TownRoom extends BaseRoom<TownState> {
     async onCreate(options: any) {
         console.log(`\n[TownRoom] ---------------------------------`);
         console.log(`[TownRoom] onCreate started...`);
+        console.log("[TownRoom] EnemyState schema version:", ENEMY_STATE_SCHEMA_VERSION);
+        console.log("[TownRoom] EnemyState import check:", EnemyState.name);
+        console.log("[TownRoom] EnemyState metadata:", (EnemyState as any)._definition?.fieldsByIndex);
+        
         const startTime = Date.now();
 
         this.setState(new TownState());
@@ -132,8 +136,8 @@ export class TownRoom extends BaseRoom<TownState> {
             console.log(`[TownRoom] Generating world scenery...`);
             this.generateWorld();
             
-            console.log(`[TownRoom] Spawning enemies and loot...`);
-            this.spawnEnemies(); 
+            console.log(`[TownRoom] Spawning loot only while debugging EnemyState schema mismatch...`);
+            // this.spawnEnemies();
             this.spawnVillageLoot();
             this.initializeStores();
             
@@ -151,8 +155,8 @@ export class TownRoom extends BaseRoom<TownState> {
             this.flushDirtyDatabases();
         }, 15000);
         
-        // Spawn one event immediately for testing/startup
-        setTimeout(() => this.spawnRealmEvent(), 10000);
+        // Disabled while debugging EnemyState schema mismatch.
+        // setTimeout(() => this.spawnRealmEvent(), 10000);
 
         // --- ECONOMY & TOWN BUILDING ---
         this.onMessage("interactDecoration", (client, message: { id: string }) => {

@@ -1,5 +1,7 @@
 import { Schema, type, MapSchema } from "@colyseus/schema";
 
+export const ENEMY_STATE_SCHEMA_VERSION = "EnemyState-v22-afflictions-last";
+
 export class AfflictionState extends Schema {
     @type("string") type: string = "";
     @type("number") duration: number = 0;
