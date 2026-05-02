@@ -27,11 +27,15 @@ export class MazeRoom extends BaseRoom<TownState> {
             this.state.decorations.clear();
         }
 
+        // --- CRITICAL COLLISION FIX ---
         // Inject a flag so our CollisionSystem knows we are in the Maze
+        // This stops checkDynamicCollision from throwing false positives on town assets
         (this.state as any).isMaze = true; 
 
-        // 4. Generate the exact same physical walls on the server using our fixed seed
+        // Generate the exact same physical walls on the server using our fixed seed
         generateMaze(42);
+
+        console.log("[MazeRoom] Maze colliders generated successfully on the server.");
 
         // 5. Set the 10-minute DOOM TIMER authoritatively on the server
         this.mazeEndTime = Date.now() + (10 * 60 * 1000);
@@ -122,10 +126,26 @@ export class MazeRoom extends BaseRoom<TownState> {
         // Run the BaseRoom join logic (loads Firebase data, creates PlayerState, Unstuck mechanic, etc.)
         await super.onJoin(client, options);
 
-        // Reset escape flag for safety in case of reconnection loops
         const player = this.state.players.get(client.sessionId);
         if (player) {
+            // Reset escape flag for safety in case of reconnection loops
             (player as any).hasEscaped = false;
+
+            // Explicitly clamp the player to 0,0 upon joining the maze instance
+            const oldX = player.x;
+            const oldY = player.y;
+
+            player.x = 0;
+            player.y = 0;
+
+            // Sync the spatial grid to the new exact coordinates
+            this.playerGrid.update(player, oldX, oldY, player.x, player.y);
+
+            // Force the client's screen to completely sync to this exact valid starting coordinate
+            client.send("forcePosition", {
+                x: player.x,
+                z: player.y
+            });
         }
 
         // Wait a tiny bit to ensure the client is fully registered before sending the timer
