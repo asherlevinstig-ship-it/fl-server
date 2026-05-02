@@ -1767,7 +1767,15 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     }
 
     protected onClientReconnected(client: Client) {
-        client.send("global_event_sync", { name: BaseRoom.nextEventName, remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) });
+        // Add a slight delay to let the frontend build the scene and register bindings
+        setTimeout(() => {
+            if (this.clients.includes(client)) {
+                client.send("global_event_sync", { 
+                    name: BaseRoom.nextEventName, 
+                    remainingMs: Math.max(0, BaseRoom.nextEventTime - Date.now()) 
+                });
+            }
+        }, 500); 
     }
 
     protected universalUpdate(deltaTime: number) {
