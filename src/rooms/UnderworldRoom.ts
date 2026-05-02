@@ -12,8 +12,9 @@ export class UnderworldRoom extends BaseRoom<TownState> {
     private platformRadiusSq = 300 * 300; 
 
     async onCreate(options: any) {
-        await super.onCreate(options); 
+        // Change A: Set state first so BaseRoom handlers and intervals have access to it
         this.setState(new TownState());
+        await super.onCreate(options); 
 
         this.onMessage("attack", (client, message: { targetX: number, targetZ: number }) => {
             const attacker = this.state.players.get(client.sessionId);
@@ -204,12 +205,14 @@ export class UnderworldRoom extends BaseRoom<TownState> {
         // AWAIT FIRM DATABASE SAVE FIRST to prevent race conditions on reconnect
         await this.savePlayerToDB(victim.sessionId);
 
+        // Change B: Send a single, combined death/teleport event with a delay
         const victimClient = this.clients.find(c => c.sessionId === victim.sessionId);
         if (victimClient) {
-            // Give them the death message UI
-            victimClient.send("underworld_death", { message: "💀 The Void consumed you. You dropped your items and lost a Level." });
-            // Force the client to load the Town Scene immediately, bypassing the UI timeout!
-            victimClient.send("server_event_teleport", { zone: "town" });
+            victimClient.send("underworld_death", {
+                message: "💀 The Void consumed you. You dropped your items and lost a Level.",
+                zone: "town",
+                delayMs: 1200
+            });
         }
 
         if (killer) {
@@ -229,10 +232,14 @@ export class UnderworldRoom extends BaseRoom<TownState> {
             // Await the killer's save as well so they don't lose their 2000 XP / Items on transition
             await this.savePlayerToDB(killer.sessionId);
 
+            // Change C: Send a single, combined escape/teleport event with a delay
             const killerClient = this.clients.find(c => c.sessionId === killer.sessionId);
             if (killerClient) {
-                killerClient.send("underworld_escape", { message: "🩸 Flawless Victory! You escape the Underworld." });
-                killerClient.send("server_event_teleport", { zone: "town" });
+                killerClient.send("underworld_escape", {
+                    message: "🩸 Flawless Victory! You escape the Underworld.",
+                    zone: "town",
+                    delayMs: 1200
+                });
             }
         }
     }
