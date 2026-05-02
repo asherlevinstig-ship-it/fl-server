@@ -1,177 +1,217 @@
-import { Client } from "colyseus";
+import { Client } from "@colyseus/core";
 import { BaseRoom } from "./BaseRoom";
 import { TownState } from "../schema/TownState";
-import { generateMaze, distSq } from "../game/CollisionSystem";
+import { generateMaze } from "../game/CollisionSystem";
 
 export class MazeRoom extends BaseRoom<TownState> {
-    maxClients = 40;
-    private mazeEndTime: number = 0;
-    private timeUpTriggered: boolean = false;
+    maxClients = 20;
+
+    private mazeDurationSeconds = 180;
+    private mazeTimer = this.mazeDurationSeconds;
+    private mazeFinished = false;
 
     async onCreate(options: any) {
-        // 1. Initialize the universal physics, combat, and handlers from BaseRoom
-        await super.onCreate(options); 
-        
-        // 2. Instantiate the State! BaseRoom relies on us to define the specific schema instance.
+        /**
+         * IMPORTANT:
+         * The state must exist BEFORE BaseRoom.onCreate() registers message handlers
+         * and starts the simulation interval.
+         */
         this.setState(new TownState());
-        this.state.zoneName = "The Labyrinth";
 
-        // 3. Purge the invisible Town objects spawned by BaseRoom
-        if (this.state.buildings) {
-            this.state.buildings.clear();
-        }
-        if (this.state.scenery) {
-            this.state.scenery.clear();
-        }
-        if (this.state.decorations) {
-            this.state.decorations.clear();
-        }
+        /**
+         * BaseRoom.checkDynamicCollision() has a guard:
+         * if (state.isMaze) return false;
+         *
+         * This prevents town buildings/scenery/decorations from blocking Maze movement.
+         */
+        (this.state as any).isMaze = true;
 
-        // --- CRITICAL COLLISION FIX ---
-        // Inject a flag so our CollisionSystem knows we are in the Maze
-        // This stops checkDynamicCollision from throwing false positives on town assets
-        (this.state as any).isMaze = true; 
-
-        // Generate the exact same physical walls on the server using our fixed seed
+        /**
+         * This must match MazeScene:
+         * const mazeData = generateMaze(42);
+         *
+         * The client and server need the same generated collision data.
+         */
         generateMaze(42);
 
         console.log("[MazeRoom] Maze colliders generated successfully on the server.");
 
-        // 5. Set the 10-minute DOOM TIMER authoritatively on the server
-        this.mazeEndTime = Date.now() + (10 * 60 * 1000);
-        this.timeUpTriggered = false;
+        /**
+         * Register BaseRoom handlers after state + maze flags are ready.
+         * This gives MazeRoom the shared movement, attack, ability, interaction,
+         * queue, and universal update logic.
+         */
+        await super.onCreate(options);
 
-        // 6. Server-side tick to check for Time Out and Exit Proximity
-        // Inherit BaseRoom's tick rate to prevent the movement validator from rejecting client packets.
-        this.setSimulationInterval((deltaTime) => {
-            super.universalUpdate(deltaTime); // Keep handling stamina/mana regen and hazards
+        console.log("[MazeRoom] BaseRoom handlers registered.");
 
-            const now = Date.now();
+        /**
+         * Maze-specific timer.
+         */
+        this.clock.setInterval(() => {
+            if (this.mazeFinished) return;
 
-            // Check if time is up
-            if (!this.timeUpTriggered && now >= this.mazeEndTime) {
-                this.timeUpTriggered = true;
-                
-                // Tell all connected clients they failed
-                this.broadcast("maze_failed", { message: "⌛ TIME IS UP! The Labyrinth claims your soul..." });
-                
-                // Boot everyone and close the room instance after a short 3.5s delay
-                // This gives the client time to read the message and transition to the Underworld
-                setTimeout(() => {
-                    this.disconnect(); 
-                }, 3500); 
-                
-                return;
+            this.mazeTimer--;
+
+            this.broadcast("maze_timer_sync", {
+                remainingSeconds: Math.max(0, this.mazeTimer)
+            });
+
+            if (this.mazeTimer <= 0) {
+                this.failMaze();
             }
-
-            // 7. The Win Condition (Reaching the Exit Beacon at 350, 350)
-            // By doing this in the update loop, we avoid overriding the "interact" message handler in BaseRoom
-            if (!this.timeUpTriggered) {
-                this.state.players.forEach((player, sessionId) => {
-                    if (player.isSleeping || player.isMeditating || (player as any).hasEscaped) {
-                        return;
-                    }
-
-                    // PERFORMANCE: Fast Squared Distance Check
-                    // Using player.y because the Colyseus schema uses y for ground depth in a 2D grid
-                    const distToExitSq = distSq(player.x, player.y, 350, 350);
-                    
-                    if (distToExitSq < 225.0) { // 15^2
-                        // Lock state so they don't trigger this multiple times per second
-                        (player as any).hasEscaped = true;
-
-                        const client = this.clients.find(c => c.sessionId === sessionId);
-                        if (client) {
-                            // They made it! Give them a massive reward and let them escape
-                            player.coins += 5000;
-                            
-                            // Grant some massive experience for beating the maze
-                            player.experience += 2500;
-                            
-                            // Handle level up logic identically to BaseRoom
-                            if (player.experience >= player.experienceToNextLevel) {
-                                player.experience -= player.experienceToNextLevel;
-                                player.level += 1;
-                                player.experienceToNextLevel = Math.floor(player.experienceToNextLevel * 1.5);
-                                player.skillTree.unspentAwakeningPoints += 1;
-                                player.maxHp += 10; 
-                                player.hp = player.maxHp;
-                                player.maxMp += 10; 
-                                player.mp = player.maxMp;
-                                player.maxStamina += 10; 
-                                player.stamina = player.maxStamina;
-                                player.maxHunger += 10; 
-                                player.hunger = player.maxHunger;
-                            }
-
-                            // Trigger the global broadcast to everyone in the maze
-                            this.broadcast("server_event_log", {
-                                html: `🏆 <b>${player.name}</b> has escaped The Labyrinth!`,
-                                type: "event-win"
-                            });
-
-                            // Tell the specific client they won, which will trigger their scene transition
-                            client.send("maze_escaped", { text: "🏆 YOU ESCAPED THE LABYRINTH!" });
-                            
-                            // PERFORMANCE: Batch save instead of blocking the thread
-                            this.markPlayerDirty(sessionId);
-                        }
-                    }
-                });
-            }
-        });
+        }, 1000);
     }
 
     async onJoin(client: Client, options: any) {
-        // Run the BaseRoom join logic (loads Firebase data, creates PlayerState, Unstuck mechanic, etc.)
+        /**
+         * Let BaseRoom create/load the PlayerState first.
+         */
         await super.onJoin(client, options);
 
         const player = this.state.players.get(client.sessionId);
-        if (player) {
-            // Reset escape flag for safety in case of reconnection loops
-            (player as any).hasEscaped = false;
 
-            // Explicitly clamp the player to 0,0 upon joining the maze instance
-            const oldX = player.x;
-            const oldY = player.y;
+        if (!player) {
+            console.warn("[MazeRoom] Player missing after super.onJoin", {
+                sessionId: client.sessionId
+            });
+            return;
+        }
 
-            player.x = 0;
-            player.y = 0;
+        const oldX = player.x;
+        const oldY = player.y;
 
-            // Sync the spatial grid to the new exact coordinates
-            this.playerGrid.update(player, oldX, oldY, player.x, player.y);
+        /**
+         * Maze spawn.
+         * Keep this away from generated walls.
+         * Your generateMaze() already skips the central spawn radius, so 0,0 is fine.
+         */
+        player.x = 0;
+        player.y = 0;
 
-            // Force the client's screen to completely sync to this exact valid starting coordinate
-            client.send("forcePosition", {
-                x: player.x,
-                z: player.y
+        player.hp = player.maxHp;
+        player.mp = player.maxMp;
+        player.hunger = player.maxHunger;
+
+        /**
+         * Reset movement acknowledgement for client prediction.
+         * The client log showed lastProcessedInput stuck at 0.
+         * Once BaseRoom.processMove() receives messages, this should increase.
+         */
+        player.lastProcessedInput = 0;
+
+        /**
+         * Update the spatial grid using the old position and new position.
+         */
+        this.playerGrid.update(player, oldX, oldY, player.x, player.y);
+
+        /**
+         * Send all coordinate aliases.
+         * Some client code reads z first, then y.
+         */
+        client.send("forcePosition", {
+            x: player.x,
+            y: player.y,
+            z: player.y
+        });
+
+        this.markPlayerDirty(client.sessionId);
+
+        console.log("[MazeRoom] Player joined maze", {
+            sessionId: client.sessionId,
+            name: player.name,
+            x: player.x,
+            y: player.y,
+            lastProcessedInput: player.lastProcessedInput
+        });
+    }
+
+    protected universalUpdate(deltaTime: number) {
+        /**
+         * Keep all BaseRoom systems running:
+         * - enemies
+         * - hazards
+         * - familiars
+         * - dirty saves
+         * - etc.
+         */
+        super.universalUpdate(deltaTime);
+
+        if (this.mazeFinished) return;
+
+        /**
+         * Maze exit check.
+         * Your MazeScene beacon is at 350,350:
+         *
+         * this.exitBeacon.position.set(350, 50, 350);
+         */
+        const exitX = 350;
+        const exitY = 350;
+        const exitRadiusSq = 10 * 10;
+
+        for (const [sessionId, player] of this.state.players.entries()) {
+            const dx = player.x - exitX;
+            const dy = player.y - exitY;
+
+            if (dx * dx + dy * dy <= exitRadiusSq) {
+                this.completeMaze(sessionId);
+                break;
+            }
+        }
+    }
+
+    private completeMaze(sessionId: string) {
+        if (this.mazeFinished) return;
+        this.mazeFinished = true;
+
+        const player = this.state.players.get(sessionId);
+
+        console.log("[MazeRoom] Maze escaped", {
+            sessionId,
+            name: player?.name
+        });
+
+        const client = this.clients.find(c => c.sessionId === sessionId);
+
+        if (client) {
+            client.send("maze_escaped", {
+                text: "You escaped the Labyrinth!"
             });
         }
 
-        // Wait a tiny bit to ensure the client is fully registered before sending the timer
-        setTimeout(() => {
-            if (this.clients.includes(client)) {
-                // Calculate EXACTLY how many seconds are left in the server's instance
-                const remainingMs = Math.max(0, this.mazeEndTime - Date.now());
-                const remainingSeconds = Math.floor(remainingMs / 1000);
-
-                // Send this authoritative time to the specific player who just joined/reconnected
-                client.send("maze_timer_sync", { remainingSeconds });
-            }
-        }, 500);
+        /**
+         * Let the client UI handle the zone switch after showing the result.
+         * Main already listens for maze_escaped and switches to town.
+         */
     }
 
-    protected onClientReconnected(client: Client) {
-        super.onClientReconnected(client);
-        
-        // Ensure they get the correct time remaining upon reconnecting to the room
-        const remainingMs = Math.max(0, this.mazeEndTime - Date.now());
-        const remainingSeconds = Math.floor(remainingMs / 1000);
-        client.send("maze_timer_sync", { remainingSeconds });
+    private failMaze() {
+        if (this.mazeFinished) return;
+        this.mazeFinished = true;
+
+        console.log("[MazeRoom] Maze failed. Sending players to underworld.");
+
+        for (const client of this.clients) {
+            client.send("maze_failed", {
+                message: "The Labyrinth consumed you..."
+            });
+        }
+
+        /**
+         * Main already listens for maze_failed and switches to underworld.
+         */
     }
 
     async onLeave(client: Client, code?: number) {
-        // Fallback to the BaseRoom's pesrsistent saving and disconnect logic
         await super.onLeave(client, code);
+
+        console.log("[MazeRoom] Player left maze", {
+            sessionId: client.sessionId,
+            code
+        });
+    }
+
+    onDispose() {
+        console.log("[MazeRoom] Disposed.");
     }
 }
