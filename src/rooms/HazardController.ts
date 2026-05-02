@@ -1,4 +1,5 @@
-import { BaseRoom, applyAffliction } from "./BaseRoom";
+import { BaseRoom } from "./BaseRoom";
+import { applyAffliction } from "./CombatController";
 import { EnemyState } from "../schema/EnemyState";
 import { SceneryState } from "../schema/SceneryState";
 import { distToSegmentSquared } from "../game/CollisionSystem";

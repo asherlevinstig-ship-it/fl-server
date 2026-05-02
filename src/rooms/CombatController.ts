@@ -1,6 +1,6 @@
 import { Client } from "@colyseus/core";
 import { BaseRoom, DodgeMessage, AttackMessage, Hazard } from "./BaseRoom";
-import { EnemyState } from "../schema/EnemyState";
+import { EnemyState, AfflictionState } from "../schema/EnemyState";
 import { SceneryState } from "../schema/SceneryState";
 import { ITEM_DB } from "../ItemDatabase";
 import { 
