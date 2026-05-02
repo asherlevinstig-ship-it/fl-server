@@ -536,8 +536,18 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (canMount || (familiar.type === "dragon_hoarder" && familiar.action === "transformed")) {
                         (player as any).mountedFamiliarId = familiarId;
                         familiar.action = "mounted";
+                        
+                        const oldPlayerX = player.x;
+                        const oldPlayerY = player.y;
+                        const oldFamX = familiar.x;
+                        const oldFamY = familiar.y;
+
                         player.x = familiar.x;
                         player.y = familiar.y;
+
+                        this.playerGrid.update(player, oldPlayerX, oldPlayerY, player.x, player.y);
+                        this.familiarGrid.update(familiar, oldFamX, oldFamY, familiar.x, familiar.y);
+
                         this.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "mount_up", targetX: player.x, targetZ: player.y });
                     } else {
                         client.send("hud_message", "Familiar is not strong enough to carry you yet.");
@@ -880,6 +890,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     chest.inventory.get(message.itemName)!.quantity += 1;
                 } else {
                     const newItem = new InventoryItemState();
+                    // Fix 3: Also copy `desc` across when creating items here
                     newItem.name = invItem.name;
                     newItem.desc = invItem.desc;
                     newItem.quantity = 1;
@@ -906,6 +917,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     p.inventory.get(message.itemName)!.quantity += 1;
                 } else {
                     const newItem = new InventoryItemState();
+                    // Fix 4: Also copy `desc` here
                     newItem.name = chestItem.name;
                     newItem.desc = chestItem.desc;
                     newItem.quantity = 1;
@@ -1289,14 +1301,19 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     if (hitTownY || hitDynY || hitMazeY || hitUnderY) nextY = player.y;
                 }
 
+                const oldPlayerX = player.x;
+                const oldPlayerY = player.y;
+                const oldFamX = familiar.x;
+                const oldFamY = familiar.y;
+
                 familiar.x = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextX));
                 familiar.y = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextY));
                 
                 player.x = familiar.x;
                 player.y = familiar.y;
 
-                this.playerGrid.update(player, player.x, player.y, player.x, player.y);
-                this.familiarGrid.update(familiar, familiar.x, familiar.y, familiar.x, familiar.y);
+                this.playerGrid.update(player, oldPlayerX, oldPlayerY, player.x, player.y);
+                this.familiarGrid.update(familiar, oldFamX, oldFamY, familiar.x, familiar.y);
             } else {
                 (player as any).mountedFamiliarId = "";
                 (player as any).isFlying = false;
