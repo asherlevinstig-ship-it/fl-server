@@ -171,7 +171,7 @@ export class MazeRoom extends BaseRoom<TownState> {
     }
 
     async onLeave(client: Client, code?: number) {
-        // Fallback to the BaseRoom's persistent saving and disconnect logic
+        // Fallback to the BaseRoom's pesrsistent saving and disconnect logic
         await super.onLeave(client, code);
     }
 }
