@@ -11,7 +11,6 @@ import { DecorationState } from "../schema/DecorationState";
 import { StoreState } from "../schema/StoreState";
 import { FamiliarState } from "../schema/FamiliarState";
 import { ITEM_DB } from "../ItemDatabase";
-import { QUEST_DB } from "../QuestDatabase";
 import { db } from "../db/firebase";
 
 import { getSkillDef, getAbilityCategory } from "../data/AbilityDatabase";
@@ -22,6 +21,7 @@ import { setupTradeSystem } from "./TradeController";
 // --- NEW CONTROLLERS ---
 import { processHazards } from "./HazardController";
 import { processAttack, processDodge, updateEnemies } from "./CombatController";
+import { progressQuest as handleQuestProgress } from "./QuestController"; // Renamed to avoid collision
 
 import { 
     WORLD_RADIUS,
@@ -102,7 +102,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     public activeHazards: Hazard[] = [];
     
     protected lastMoveTimes = new Map<string, number>();
-    public lastAttackTimes = new Map<string, number>(); // Now Public
+    public lastAttackTimes = new Map<string, number>();
 
     private actionQueue: QueuedAction[] = [];
     private dirtyPlayers = new Set<string>(); 
@@ -137,6 +137,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             id++;
         }
         return id;
+    }
+
+    // --- WRAPPER EXPOSED FOR CONTROLLERS ---
+    public progressQuest(player: PlayerState, type: string, targetId: string, amount: number, client: Client | undefined) {
+        handleQuestProgress(this, player, type, targetId, amount, client);
     }
 
     public removePlayerFromTeam(sessionId: string, kicked: boolean = false) {
@@ -202,59 +207,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (!(ability.rank === "Diamond" && ability.level === 9)) {
             ability.unconsolidatedProficiency += amount;
         }
-    }
-
-    public progressQuest(player: PlayerState, type: string, targetId: string, amount: number, client: Client | undefined) {
-        if (!client) return;
-
-        player.activeQuests.forEach((qProgress, qId) => {
-            const qDef = QUEST_DB[qId];
-            if (!qDef) return;
-
-            const obj = qDef.objectives.find(o => o.type === type && o.targetId === targetId);
-            if (obj && !qProgress.isCompleted) {
-                qProgress.currentAmount += amount;
-                
-                if (qProgress.currentAmount >= obj.requiredAmount) {
-                    qProgress.currentAmount = obj.requiredAmount;
-                    qProgress.isCompleted = true;
-                    
-                    player.coins += qDef.rewards.coins;
-                    player.experience += qDef.rewards.exp;
-                    
-                    if (player.experience >= player.experienceToNextLevel) {
-                        player.experience -= player.experienceToNextLevel;
-                        player.level += 1;
-                        player.experienceToNextLevel = Math.floor(player.experienceToNextLevel * 1.5);
-                        player.skillTree.unspentAwakeningPoints += 1;
-                        player.maxHp += 10; player.hp = player.maxHp;
-                        player.maxMp += 10; player.mp = player.maxMp;
-                        player.maxStamina += 10; player.stamina = player.maxStamina;
-                        player.maxHunger += 10; player.hunger = player.maxHunger;
-                    }
-                    
-                    player.completedQuests.push(qId);
-                    player.activeQuests.delete(qId);
-                    
-                    client.send("server_event_log", {
-                        html: `🏆 <b style="color: #ffaa00;">Quest Complete:</b> ${qDef.title} (+${qDef.rewards.coins} Coins)`,
-                        type: "event-win"
-                    });
-                    
-                    if (qDef.nextQuestId) {
-                        const nextQ = new QuestProgressState();
-                        nextQ.questId = qDef.nextQuestId;
-                        player.activeQuests.set(qDef.nextQuestId, nextQ);
-                        
-                        client.send("server_event_log", {
-                            html: `📜 <b style="color: #00ffaa;">New Quest:</b> ${QUEST_DB[qDef.nextQuestId].title}`,
-                            type: "event-info"
-                        });
-                    }
-                    this.markPlayerDirty(player.sessionId);
-                }
-            }
-        });
     }
 
     public awardPlayerKill(player: PlayerState, victimName?: string) {
@@ -354,7 +306,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
     }
 
-    public spawnDrop(x: number, y: number, kind: string) { // Now Public
+    public spawnDrop(x: number, y: number, kind: string) {
         const drop = new LootState();
         drop.id = `drop_${Date.now()}_${Math.random()}`;
         drop.kind = kind;
@@ -755,7 +707,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             this.removePlayerFromTeam(message.targetSessionId, true);
         });
 
-        this.onMessage("quick_chat", (client, message: { channel: "local" | "team" | "global", msgId: string }) => {
+       this.onMessage("quick_chat", (client, message: { channel: "local" | "team" | "global", msgId: string }) => {
             const p = this.state.players.get(client.sessionId);
             if (!p || p.isSleeping || p.isMeditating) return;
 
@@ -792,6 +744,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             } else {
                 this.broadcastNearby(p.x, p.y, 40, "chat_received", outMsg);
             }
+
+            this.progressQuest(p, "action", "use_chat", 1, client);
         });
 
         this.onMessage("equipItem", (client, message: { itemName: string }) => {
@@ -899,7 +853,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     chest.inventory.get(message.itemName)!.quantity += 1;
                 } else {
                     const newItem = new InventoryItemState();
-                    // Fix 3: Also copy `desc` across when creating items here
                     newItem.name = invItem.name;
                     newItem.desc = invItem.desc;
                     newItem.quantity = 1;
@@ -926,7 +879,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                     p.inventory.get(message.itemName)!.quantity += 1;
                 } else {
                     const newItem = new InventoryItemState();
-                    // Fix 4: Also copy `desc` here
                     newItem.name = chestItem.name;
                     newItem.desc = chestItem.desc;
                     newItem.quantity = 1;
@@ -1241,10 +1193,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 this.processMove(client, (action as any).data);
             } 
             else if (type === "dodge") {
-                processDodge(this, client, (action as any).data); // DELEGATED
+                processDodge(this, client, (action as any).data);
             }
             else if (type === "attack") {
-                processAttack(this, client, (action as any).data); // DELEGATED
+                processAttack(this, client, (action as any).data);
             }
             else if (type === "ability") {
                 this.processAbility(client, (action as any).data);
@@ -1359,8 +1311,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         if (!isWolf) {
             const serverRadius = 0.5;
             
-            // Fix 1: Allow falling off the edge in the underworld by ignoring collision at the extreme boundaries (>295 radius)
-            const isSafeDistX = (nextX * nextX + player.y * player.y) < 87025; // 295^2
+            const isSafeDistX = (nextX * nextX + player.y * player.y) < 87025; 
             const isSafeDistY = (nextX * nextX + nextY * nextY) < 87025;
 
             const hitTownX = isTown && checkTownCollision(nextX, player.y, serverRadius);
@@ -1483,7 +1434,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         this.dirtyPlayers.add(sessionId);
     }
 
-    // Fix 2: Changed to 'public' so UnderworldRoom can explicitly force the DB save on death
     public async savePlayerToDB(sessionId: string) {
         const p = this.state.players.get(sessionId); 
         if (!p) return;
@@ -1762,8 +1712,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
             }
             
-            // ✅ MOVED INSIDE THE TIMEOUT
-            // Now the frontend HUD is fully loaded before this arrives
             this.broadcastNearby(player.x, player.y, 60, "server_event_log", { 
                 html: `👋 <b>${player.name}</b> joined the realm.`, 
                 type: "event-join" 
@@ -1800,7 +1748,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     }
 
     protected onClientReconnected(client: Client) {
-        // Add a slight delay to let the frontend build the scene and register bindings
         setTimeout(() => {
             if (this.clients.includes(client)) {
                 client.send("global_event_sync", { 
@@ -1917,10 +1864,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         }
 
-        // --- DELEGATED UPDATES ---
         processHazards(this, dt);
         updateEnemies(this, dt);
-        
         updateFamiliars(this, dt);
     }
 }
