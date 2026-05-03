@@ -1,10 +1,11 @@
 import { EnemyState, AfflictionState } from "./schema/EnemyState";
 import { SceneryState } from "./schema/SceneryState";
+import { PlayerState } from "./schema/PlayerState";
 import { ITEM_DB } from "./ItemDatabase";
 import { BaseRoom, IBaseState } from "./rooms/BaseRoom"; 
 import { getSkillDef } from "./data/AbilityDatabase";
 
-import { checkTownCollision, checkDynamicCollision, distToSegmentSquared } from "./game/CollisionSystem";
+import { checkTownCollision, checkDynamicCollision, checkMazeCollision, checkUnderworldCollision, distToSegmentSquared } from "./game/CollisionSystem";
 
 // ==========================================
 // 0.17 CLIENT ABSTRACTION
@@ -49,6 +50,69 @@ export function applyAffliction(
     enemy[`${type}_stacks`] = Math.min(currentStacks + stacks, maxStacks);
 }
 
+// --- UNIFIED MOBILITY VALIDATOR ---
+function resolveMobilityAbility(ctx: AbilityContext, config: {
+    maxRange: number;
+    visualId: string;
+    allowThroughWalls?: boolean;
+}) {
+    const { room, client, player, targetX, targetZ } = ctx;
+    
+    const dx = targetX - player.x; 
+    const dz = targetZ - player.y;
+    const dSq = dx * dx + dz * dz;
+    const maxSq = config.maxRange * config.maxRange;
+
+    let finalX = targetX; 
+    let finalZ = targetZ;
+
+    if (dSq > maxSq) {
+        const dist = Math.sqrt(dSq);
+        finalX = player.x + (dx / dist) * config.maxRange;
+        finalZ = player.y + (dz / dist) * config.maxRange;
+    }
+
+    if (!config.allowThroughWalls) {
+        const isTown = room.roomName === "town" || room.constructor.name === "TownRoom";
+        const isMaze = room.roomName === "maze" || room.constructor.name === "MazeRoom";
+        const isUnderworld = room.roomName === "underworld" || room.constructor.name === "UnderworldRoom";
+
+        const testDist = Math.sqrt((finalX - player.x)**2 + (finalZ - player.y)**2) || 1;
+        const nX = dx / Math.sqrt(dSq);
+        const nZ = dz / Math.sqrt(dSq);
+
+        finalX = player.x; 
+        finalZ = player.y;
+
+        for(let i = 2; i <= testDist; i += 2) {
+            let testX = player.x + nX * i;
+            let testZ = player.y + nZ * i;
+            
+            const hitWall = (isTown && checkTownCollision(testX, testZ, 0.5)) || 
+                            (isMaze && checkMazeCollision(testX, testZ, 0.5)) ||
+                            (isUnderworld && checkUnderworldCollision(testX, testZ, 0.5)) ||
+                            checkDynamicCollision(room.state, testX, testZ, 0.5);
+            
+            if (hitWall) break;
+            
+            finalX = testX; 
+            finalZ = testZ;
+        }
+    }
+
+    const oldX = player.x; 
+    const oldZ = player.y;
+    
+    player.x = finalX; 
+    player.y = finalZ;
+    
+    room.playerGrid.update(player, oldX, oldZ, player.x, player.y);
+    client.send("forcePosition", { x: finalX, z: finalZ });
+    room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: player.sessionId, abilityId: config.visualId, targetX: finalX, targetZ: finalZ });
+
+    return { finalX, finalZ };
+}
+
 // ==========================================
 // SHARED TYPES & ABILITY DICTIONARY
 // ==========================================
@@ -66,7 +130,7 @@ export type AbilityContext = {
     room: RoomWithState; 
     client: RoomClient;
     message: any;
-    player: any;
+    player: PlayerState;
     rank: (upgradeId: string) => number;
     targetX: number;
     targetZ: number;
@@ -113,14 +177,11 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
             room.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "tactical_ping", targetX: player.x, targetZ: player.y });
         }
     },
-    traveler_branch: ({ room, client, player, rank, targetX, targetZ, now }) => {
+    traveler_branch: (ctx) => {
+        const { room, client, player, rank, targetX, targetZ, now } = ctx;
         const travRank = rank("branch_progression");
         if (travRank >= 5) {
-            const oldX = player.x; const oldY = player.y;
-            player.x = targetX; player.y = targetZ;
-            room.playerGrid.update(player, oldX, oldY, player.x, player.y);
-            client.send("forcePosition", { x: targetX, z: targetZ });
-            room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: player.sessionId, abilityId: "instant_relocation", targetX, targetZ });
+            resolveMobilityAbility(ctx, { maxRange: 9999, visualId: "instant_relocation", allowThroughWalls: true });
             return;
         }
         if (travRank >= 2) {
@@ -228,34 +289,11 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
     // ------------------------------------------
     // UTILITY: MOBILITY SYSTEM
     // ------------------------------------------
-    mobility_base: ({ room, client, player, rank, targetX, targetZ }) => {
-        if (rank("core_progression") >= 2) {
-            const dx = targetX - player.x; const dz = targetZ - player.y;
-            const distSqCalc = dx * dx + dz * dz;
-            const dist = Math.sqrt(distSqCalc) || 1;
-            const dashDist = 8.0;
-            
-            let finalX = player.x + (dx / dist) * dashDist;
-            let finalZ = player.y + (dz / dist) * dashDist;
-
-            // PERFORMANCE: Step by 2 units for collision instead of 1
-            for(let i = 2; i <= dashDist; i += 2) {
-                let testX = player.x + (dx / dist) * i;
-                let testZ = player.y + (dz / dist) * i;
-                if (checkTownCollision(testX, testZ) || checkDynamicCollision(room.state, testX, testZ)) {
-                    break;
-                }
-                finalX = testX; finalZ = testZ;
-            }
-            
-            const oldX = player.x; const oldY = player.y;
-            player.x = finalX; player.y = finalZ;
-            room.playerGrid.update(player, oldX, oldY, player.x, player.y);
-            client.send("forcePosition", { x: finalX, z: finalZ });
-            room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: player.sessionId, abilityId: "basic_dash", targetX: finalX, targetZ: finalZ });
-        }
+    mobility_base: (ctx) => {
+        if (ctx.rank("core_progression") >= 2) resolveMobilityAbility(ctx, { maxRange: 8.0, visualId: "basic_dash" });
     },
-    speed_branch: ({ room, client, player, rank, targetX, targetZ }) => {
+    speed_branch: (ctx) => {
+        const { room, player, rank } = ctx;
         const spdRank = rank("branch_progression");
         if (spdRank >= 3) {
             room.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "time_slow", targetX: player.x, targetZ: player.y });
@@ -263,32 +301,20 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
                 if (distSq(e.x, e.y, player.x, player.y) <= 225.0) applyAffliction(e, "Slow", 5.0, 0, 0, 5, 5);
             }
         } else if (spdRank >= 1) {
-            const oldX = player.x; const oldY = player.y;
-            player.x = targetX; player.y = targetZ;
-            room.playerGrid.update(player, oldX, oldY, player.x, player.y);
-            client.send("forcePosition", { x: targetX, z: targetZ });
-            room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: player.sessionId, abilityId: "blink", targetX, targetZ });
+            resolveMobilityAbility(ctx, { maxRange: 15.0, visualId: "blink", allowThroughWalls: true });
         }
     },
-    traversal_branch: ({ room, client, player, rank, targetX, targetZ }) => {
-        if (rank("branch_progression") >= 1) {
-            const oldX = player.x; const oldY = player.y;
-            player.x = targetX; player.y = targetZ;
-            room.playerGrid.update(player, oldX, oldY, player.x, player.y);
-            client.send("forcePosition", { x: targetX, z: targetZ });
-            room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: player.sessionId, abilityId: "grapple_hook", targetX, targetZ });
-        }
+    traversal_branch: (ctx) => {
+        if (ctx.rank("branch_progression") >= 1) resolveMobilityAbility(ctx, { maxRange: 20.0, visualId: "grapple_hook" });
     },
-    escape_branch: ({ room, client, player, rank, targetX, targetZ }) => {
+    escape_branch: (ctx) => {
+        const { room, player, rank } = ctx;
         const escRank = rank("branch_progression");
         room.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "smoke_bomb", targetX: player.x, targetZ: player.y });
         (player as any).stealthedUntil = Date.now() + 5000;
         
         if (escRank >= 4) {
-            const oldX = player.x; const oldY = player.y;
-            player.x = targetX; player.y = targetZ;
-            room.playerGrid.update(player, oldX, oldY, player.x, player.y);
-            client.send("forcePosition", { x: targetX, z: targetZ });
+            resolveMobilityAbility(ctx, { maxRange: 10.0, visualId: "silent", allowThroughWalls: true });
         }
     },
 
@@ -538,27 +564,14 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
     // ------------------------------------------
     // SHADOW ESSENCE
     // ------------------------------------------
-    reaper_step: ({ room, client, player, rank, targetX, targetZ, now }) => {
+    reaper_step: (ctx) => {
+        const { room, player, rank, now } = ctx;
         const cloneRank = rank("blood_clone");
-        const startX = player.x; const startZ = player.y; 
         
-        const dx = targetX - startX; const dy = targetZ - startZ;
-        const dSq = dx*dx + dy*dy;
-        const maxTeleportSq = 144.0; // 12^2
-
-        let finalX = targetX; let finalZ = targetZ;
-
-        if (dSq > maxTeleportSq) {
-            const dist = Math.sqrt(dSq);
-            finalX = startX + (dx / dist) * 12.0;
-            finalZ = startZ + (dy / dist) * 12.0;
-        }
+        const startX = player.x; 
+        const startZ = player.y; 
         
-        player.x = finalX; player.y = finalZ; 
-        room.playerGrid.update(player, startX, startZ, player.x, player.y);
-        client.send("forcePosition", { x: finalX, z: finalZ });
-
-        room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: player.sessionId, abilityId: "reaper_step", targetX: finalX, targetZ: finalZ });
+        resolveMobilityAbility(ctx, { maxRange: 12.0, visualId: "reaper_step" });
 
         if (cloneRank >= 1) {
             room.activeHazards.push({
@@ -569,9 +582,12 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
         }
 
         if (cloneRank >= 3) {
+            const dx = player.x - startX;
+            const dy = player.y - startZ;
+            const dSq = dx * dx + dy * dy;
+            
             const batchEvents: any[] = [];
             for (const enemy of room.enemyGrid.getNearby(startX, startZ, 25.0)) {
-                // Approximate line segment distance check
                 const dot = ((enemy.x - startX) * dx + (enemy.y - startZ) * dy) / dSq;
                 const closestX = startX + dot * dx;
                 const closestZ = startZ + dot * dy;
@@ -590,33 +606,13 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
         }
     },
 
-    shadow_step: ({ room, client, message, player, rank, targetX, targetZ, now }) => {
+    shadow_step: (ctx) => {
+        const { room, client, message, player, rank, targetX, targetZ, now } = ctx;
         const wayRank = rank("way_of_the_night");
-        const oldX = player.x; const oldZ = player.y;
 
         if (message.subType === "dash" || wayRank < 2) {
             const maxDist = wayRank >= 1 ? 10.0 : 6.0;
-            
-            const dx = targetX - oldX; const dz = targetZ - oldZ;
-            const len = Math.sqrt(dx * dx + dz * dz) || 1;
-            const nX = dx / len; const nZ = dz / len;
-            
-            let finalX = oldX; let finalZ = oldZ;
-            
-            for(let i = 1; i <= maxDist; i++) {
-                let testX = oldX + nX * i;
-                let testZ = oldZ + nZ * i;
-                if (checkTownCollision(testX, testZ) || checkDynamicCollision(room.state, testX, testZ)) {
-                    break;
-                }
-                finalX = testX; finalZ = testZ;
-            }
-
-            player.x = finalX; player.y = finalZ;
-            room.playerGrid.update(player, oldX, oldZ, player.x, player.y);
-            client.send("forcePosition", { x: finalX, z: finalZ });
-            
-            room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "shadow_step_dash", targetX: finalX, targetZ: finalZ });
+            resolveMobilityAbility(ctx, { maxRange: maxDist, visualId: "shadow_step_dash" });
         }
         else if (message.subType === "place_anchor" && wayRank >= 2) {
             room.activeHazards = (room.activeHazards as any[]).filter((h: any) => !(h.type === "shadow_anchor" && h.ownerId === client.sessionId));
@@ -635,17 +631,11 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
             }
 
             if (anchorId) {
-                player.x = targetX; player.y = targetZ;
-                room.playerGrid.update(player, oldX, oldZ, player.x, player.y);
-                client.send("forcePosition", { x: targetX, z: targetZ });
-                room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "shadow_step", targetX, targetZ });
+                resolveMobilityAbility(ctx, { maxRange: 999, visualId: "shadow_step", allowThroughWalls: true });
             } else {
                 if (distSq(player.x, player.y, targetX, targetZ) <= 625.0) { // 25^2
                     if (room.isLocationInShadow(targetX, targetZ, client.sessionId)) {
-                        player.x = targetX; player.y = targetZ;
-                        room.playerGrid.update(player, oldX, oldZ, player.x, player.y);
-                        client.send("forcePosition", { x: targetX, z: targetZ });
-                        room.broadcastNearby(targetX, targetZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "shadow_step", targetX, targetZ });
+                        resolveMobilityAbility(ctx, { maxRange: 25.0, visualId: "shadow_step", allowThroughWalls: true });
                     } else {
                         client.send("serverMessage", { text: "❌ You can only teleport into shadows!", color: "#ff5555" });
                     }
@@ -886,33 +876,18 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
     // ------------------------------------------
     // LIGHT ESSENCE
     // ------------------------------------------
-    radiant_dash: ({ room, client, player, rank, targetX, targetZ, now }) => {
+    radiant_dash: (ctx) => {
+        const { room, client, player, rank, now } = ctx;
         const trailRank = rank("blinding_trail");
-        const dx = targetX - player.x; const dy = targetZ - player.y;
-        const dSq = dx * dx + dy * dy;
-        const maxLeapSq = 144.0; // 12^2
+        
+        const startX = player.x; 
+        const startZ = player.y;
 
-        const startX = player.x; const startZ = player.y;
-        let finalX = startX; let finalZ = startZ;
-
-        if (dSq > maxLeapSq) {
-            const dirLen = Math.sqrt(dSq);
-            finalX = startX + (dx / dirLen) * 12.0;
-            finalZ = startZ + (dy / dirLen) * 12.0;
-        } else {
-            finalX = targetX; finalZ = targetZ;
-        }
-
-        if (trailRank < 3) {
-            const dirLen = Math.sqrt(dSq) || 1;
-            const leapLen = Math.min(dirLen, 12.0);
-            for(let i = 1; i <= leapLen; i++) {
-                let testX = startX + (dx / dirLen) * i;
-                let testZ = startZ + (dy / dirLen) * i;
-                if (checkTownCollision(testX, testZ) || checkDynamicCollision(room.state, testX, testZ)) break;
-                finalX = testX; finalZ = testZ;
-            }
-        }
+        const { finalX, finalZ } = resolveMobilityAbility(ctx, { 
+            maxRange: 12.0, 
+            visualId: trailRank >= 3 ? "radiant_dash_silver" : "radiant_dash",
+            allowThroughWalls: trailRank >= 3 // Let Silver+ rank pass through objects
+        });
 
         if (trailRank >= 1) {
             const stepCount = 5;
@@ -937,29 +912,19 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
                 }
             }
         }
-
-        player.x = finalX; player.y = finalZ;
-        room.playerGrid.update(player, startX, startZ, player.x, player.y);
-        
-        const vfxId = trailRank >= 3 ? "radiant_dash_silver" : "radiant_dash";
-        room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: client.sessionId, abilityId: vfxId, targetX: finalX, targetZ: finalZ });
-        client.send("forcePosition", { x: finalX, z: finalZ });
     },
 
-    wings_of_dawn: ({ room, client, player, rank, targetX, targetZ, now }) => {
+    wings_of_dawn: (ctx) => {
+        const { room, client, player, rank, now } = ctx;
         const flareRank = rank("solar_flare");
-        const dx = targetX - player.x; const dy = targetZ - player.y;
-        const dSq = dx * dx + dy * dy;
-        const maxLeapSq = 144.0; // 12^2
+        
+        const startX = player.x; 
+        const startZ = player.y;
 
-        const startX = player.x; const startZ = player.y;
-        let finalX = targetX; let finalZ = targetZ;
-
-        if (dSq > maxLeapSq) {
-            const dirLen = Math.sqrt(dSq);
-            finalX = startX + (dx / dirLen) * 12.0;
-            finalZ = startZ + (dy / dirLen) * 12.0;
-        }
+        const { finalX, finalZ } = resolveMobilityAbility(ctx, { 
+            maxRange: 12.0, 
+            visualId: flareRank >= 3 ? "wings_of_dawn_silver" : "wings_of_dawn" 
+        });
         
         if (flareRank >= 1) {
             const batchEvents: any[] = [];
@@ -975,13 +940,6 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
 
         if (flareRank >= 2) (player as any).ccImmuneUntil = now + 800; 
         (player as any).invulnerableUntil = now + 600;
-        
-        player.x = finalX; player.y = finalZ;
-        room.playerGrid.update(player, startX, startZ, player.x, player.y);
-        
-        const vfxId = flareRank >= 3 ? "wings_of_dawn_silver" : "wings_of_dawn";
-        room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: client.sessionId, abilityId: vfxId, targetX: finalX, targetZ: finalZ });
-        client.send("forcePosition", { x: finalX, z: finalZ });
         
         if (room.scheduledEvents) {
             room.scheduledEvents.push({
@@ -1333,38 +1291,34 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
         }
     },
 
-    bull_rush: ({ room, client, player, rank, targetX, targetZ, now }) => {
+    bull_rush: (ctx) => {
+        const { room, client, player, rank, targetX, targetZ, now } = ctx;
         const rushRank = rank("unstoppable_force");
-        const startX = player.x; const startZ = player.y;
+        
+        const startX = player.x; 
+        const startZ = player.y;
 
-        const dx = targetX - startX; const dz = targetZ - startZ;
-        const dirLenSq = dx * dx + dz * dz;
-        const dirLen = Math.sqrt(dirLenSq) || 1;
-        const nX = dx / dirLen; const nZ = dz / dirLen;
+        const { finalX, finalZ } = resolveMobilityAbility(ctx, { 
+            maxRange: 15.0, 
+            visualId: "bull_rush" 
+        });
 
-        const maxDist = 15.0; 
-        let finalX = startX; let finalZ = startZ;
-        let hitWall = false;
-
-        for(let i = 2; i <= maxDist; i += 2) {
-            let testX = startX + nX * i;
-            let testZ = startZ + nZ * i;
-            if (checkTownCollision(testX, testZ) || checkDynamicCollision(room.state, testX, testZ)) {
-                hitWall = true; break;
-            }
-            finalX = testX; finalZ = testZ;
-        }
-
-        player.x = finalX; player.y = finalZ;
-        room.playerGrid.update(player, startX, startZ, player.x, player.y);
-        client.send("forcePosition", { x: finalX, z: finalZ });
+        // Determine if we hit a wall for the rank 3 effect by checking if we moved the full distance
+        const movedDist = Math.sqrt((finalX - startX)**2 + (finalZ - startZ)**2);
+        const hitWall = movedDist < 14.5;
 
         if (rushRank >= 1) (player as any).ccImmuneUntil = Date.now() + 1500;
 
         const hitEnemies = new Set<string>();
         const batchEvents: any[] = [];
         
-        for (const e of room.enemyGrid.getNearby(startX, startZ, maxDist + 5)) {
+        const dx = targetX - startX; 
+        const dz = targetZ - startZ;
+        const dirLen = Math.sqrt(dx * dx + dz * dz) || 1;
+        const nX = dx / dirLen; 
+        const nZ = dz / dirLen;
+
+        for (const e of room.enemyGrid.getNearby(startX, startZ, 20.0)) {
             const distSqCalc = distToSegmentSquared(e.x, e.y, startX, startZ, finalX, finalZ);
             if (distSqCalc <= 9.0) { 
                 e.hp -= 40;
@@ -1377,8 +1331,6 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
             }
         }
         if (batchEvents.length > 0) room.broadcastNearby(startX, startZ, 50, "combat_batch", batchEvents);
-
-        room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "bull_rush", targetX: finalX, targetZ: finalZ });
 
         if (rushRank >= 2) {
             room.activeHazards.push({
@@ -1401,27 +1353,15 @@ const abilityHandlers: Record<string, (ctx: AbilityContext) => void> = {
         }
     },
 
-    heroic_leap: ({ room, client, player, rank, targetX, targetZ, now }) => {
+    heroic_leap: (ctx) => {
+        const { room, client, player, rank, targetX, targetZ, now } = ctx;
         const craterRank = rank("crater_impact");
         
-        const dx = targetX - player.x; const dz = targetZ - player.y;
-        const dSq = dx * dx + dz * dz;
-        const maxLeapSq = 256.0; // 16^2
-
-        let finalX = targetX; let finalZ = targetZ;
-
-        if (dSq > maxLeapSq) {
-            const dist = Math.sqrt(dSq);
-            finalX = player.x + (dx / dist) * 16.0;
-            finalZ = player.y + (dz / dist) * 16.0;
-        }
-
-        const oldX = player.x; const oldZ = player.y;
-        player.x = finalX; player.y = finalZ;
-        room.playerGrid.update(player, oldX, oldZ, player.x, player.y);
-        client.send("forcePosition", { x: finalX, z: finalZ });
-
-        room.broadcastNearby(finalX, finalZ, 60, "abilityUsed", { id: client.sessionId, abilityId: "heroic_leap", targetX: finalX, targetZ: finalZ });
+        const { finalX, finalZ } = resolveMobilityAbility(ctx, { 
+            maxRange: 16.0, 
+            visualId: "heroic_leap",
+            allowThroughWalls: true // Allows jumping over low walls (server validation would need Z-height to be perfect to reject otherwise)
+        });
 
         if (craterRank >= 2) client.send("resetCooldown", { abilityId: "heroic_leap", slot: 2 });
 
@@ -1580,11 +1520,39 @@ export function handleAbility(room: RoomWithState, client: RoomClient, message: 
     if (!player || player.isSleeping) return;
 
     const now = Date.now();
+    const abilityId = message.abilityId;
+    const abilityDef = getSkillDef(abilityId);
+    
+    // --- TARGET RANGE VALIDATION ---
+    let targetX = message.targetX;
+    let targetZ = message.targetZ; 
+
+    if (abilityDef && targetX !== undefined && targetZ !== undefined) {
+        const dx = targetX - player.x;
+        const dz = targetZ - player.y;
+        // Default to a generous 20 units if range is undefined
+        const maxRange = abilityDef.range ?? 20;
+
+        if (dx * dx + dz * dz > maxRange * maxRange) {
+            const dist = Math.sqrt(dx * dx + dz * dz) || 1;
+            targetX = player.x + (dx / dist) * maxRange;
+            targetZ = player.y + (dz / dist) * maxRange;
+        }
+    } else {
+        // Fallback if missing
+        targetX = targetX || player.x;
+        targetZ = targetZ || player.y;
+    }
+
+    // --- CAST LOCK (ROOTING) ---
+    if (abilityDef && abilityDef.castLockMs) {
+        player.rootedUntil = Math.max(player.rootedUntil, now + abilityDef.castLockMs);
+    }
 
     // ------------------------------------------
     // STEALTH BREAK ON ABILITY CAST
     // ------------------------------------------
-    if (message.abilityId !== "umbral_dash") {
+    if (abilityId !== "umbral_dash") {
         let stealthRank = 0;
         let brokeStealth = false;
         if ((player as any).stealthedUntil && now < (player as any).stealthedUntil) {
@@ -1625,14 +1593,9 @@ export function handleAbility(room: RoomWithState, client: RoomClient, message: 
         }
     }
 
-    const abilityId = message.abilityId;
-    const targetX = message.targetX;
-    const targetZ = message.targetZ; 
-
     // ------------------------------------------
     // MANA DEDUCTION
     // ------------------------------------------
-    const abilityDef = getSkillDef(abilityId);
     if (abilityDef && abilityDef.mpCost) {
         if (player.mp < abilityDef.mpCost) {
             return; 

@@ -2,6 +2,7 @@ import { Client } from "@colyseus/core";
 import { BaseRoom, DodgeMessage, AttackMessage, Hazard } from "./BaseRoom";
 import { EnemyState, AfflictionState } from "../schema/EnemyState";
 import { SceneryState } from "../schema/SceneryState";
+import { PlayerState } from "../schema/PlayerState";
 import { ITEM_DB } from "../ItemDatabase";
 import { 
     WORLD_RADIUS,
@@ -59,38 +60,34 @@ export function processDodge(room: BaseRoom<any>, client: Client, message: Dodge
             const targetX = player.x + message.dx * dodgeDistance;
             const targetY = player.y + dY * dodgeDistance;
 
-            let nextX = player.x;
-            let nextY = player.y;
-
             const isWolf = player.isSpiritAnimal || room.activeHazards.some((h: Hazard) => h.type === "spirit_animal" && h.ownerId === client.sessionId);
-            const isTown = room.roomName === "town" || room.constructor.name === "TownRoom";
-            const isMaze = room.roomName === "maze" || room.constructor.name === "MazeRoom";
-            const isUnderworld = room.roomName === "underworld" || room.constructor.name === "UnderworldRoom";
+            
+            // Try to move to the dodged position, checking collisions unless we are a spirit wolf
+            const res = room.tryMovePlayerTo(player, client, targetX, targetY, {
+                ignoreCollision: isWolf
+            });
 
-            const serverRadius = 0.5;
+            // If we hit a wall mid-dodge, still play the dodge animation but only move as far as allowed
+            room.broadcastNearby(player.x, player.y, 40, "combatEvent", { 
+                type: "dodge", 
+                id: client.sessionId, 
+                dx: message.dx, 
+                dy: dY 
+            });
 
-            if (isWolf || (!((isTown && checkTownCollision(targetX, targetY, serverRadius)) || (isMaze && checkMazeCollision(targetX, targetY)) || (isUnderworld && checkUnderworldCollision(targetX, targetY))) && !checkDynamicCollision(room.state, targetX, targetY, serverRadius))) {
-                nextX = targetX;
-                nextY = targetY;
-            } else {
-                if (!((isTown && checkTownCollision(targetX, player.y, serverRadius)) || (isMaze && checkMazeCollision(targetX, player.y)) || (isUnderworld && checkUnderworldCollision(targetX, player.y))) && !checkDynamicCollision(room.state, targetX, player.y, serverRadius)) nextX = targetX;
-                if (!((isTown && checkTownCollision(nextX, targetY, serverRadius)) || (isMaze && checkMazeCollision(nextX, targetY)) || (isUnderworld && checkUnderworldCollision(nextX, targetY))) && !checkDynamicCollision(room.state, nextX, targetY, serverRadius)) nextY = targetY;
-            }
-
-            const oldX = player.x;
-            const oldY = player.y;
-            player.x = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextX));
-            player.y = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextY));
-
-            room.playerGrid.update(player, oldX, oldY, player.x, player.y);
-            room.broadcastNearby(player.x, player.y, 40, "combatEvent", { type: "dodge", id: client.sessionId, dx: message.dx, dy: dY });
+            // Instant Client-side Prediction Feedback
+            client.send("dodgeConfirmed", {
+                x: res.x,
+                z: res.z
+            });
         }
     }
 }
 
 // -----------------------------------------
-// ATTACK LOGIC
+// ATTACK LOGIC (DECOUPLED)
 // -----------------------------------------
+
 export function processAttack(room: BaseRoom<any>, client: Client, message: AttackMessage) {
     const player = room.state.players.get(client.sessionId);
     if (!player || player.isSleeping || player.isMeditating || Date.now() < player.rootedUntil) return;
@@ -114,200 +111,280 @@ export function processAttack(room: BaseRoom<any>, client: Client, message: Atta
     if (now - lastAttack >= cooldownMs) {
         lastAttackTimes.set(client.sessionId, now);
 
-        let stealthRank = 0; let brokeStealth = false;
-        if ((player as any).stealthedUntil && Date.now() < (player as any).stealthedUntil) {
-            brokeStealth = true;
-            (player as any).stealthedUntil = 0;
+        // 1. Stealth Mechanics
+        const { brokeStealth, stealthRank } = breakStealthOnAttack(room, player);
 
-            const hIdx = room.activeHazards.findIndex((h: Hazard) => h.type === "veil_of_shadows" && h.ownerId === player.sessionId);
-            if (hIdx !== -1) {
-                stealthRank = room.activeHazards[hIdx].rank;
-                room.broadcastNearby(player.x, player.y, 60, "removeHazard", { id: room.activeHazards[hIdx].id });
-                room.activeHazards.splice(hIdx, 1);
+        // 2. Visual Broadcast
+        room.broadcastNearby(player.x, player.y, 50, "playerAttacked", { 
+            id: client.sessionId, 
+            targetX: message.targetX, 
+            targetZ: message.targetZ 
+        });
+
+        // 3. Melee Enemy Hit Detection
+        const enemyHit = resolveMeleeHit(room, player, message.targetX, message.targetZ, brokeStealth, stealthRank);
+
+        // 4. Familiar Mimic Logic
+        resolveGeminiMimicAttack(room, player, message.targetX, message.targetZ);
+
+        // 5. Scenery/Gathering Fallback
+        if (!enemyHit) {
+            resolveSceneryHit(room, player, message.targetX, message.targetZ);
+        }
+    }
+}
+
+// --- ATTACK HELPERS ---
+
+function breakStealthOnAttack(room: BaseRoom<any>, player: PlayerState) {
+    let stealthRank = 0;
+    let brokeStealth = false;
+    
+    if ((player as any).stealthedUntil && Date.now() < (player as any).stealthedUntil) {
+        brokeStealth = true;
+        (player as any).stealthedUntil = 0;
+
+        const hIdx = room.activeHazards.findIndex((h: Hazard) => h.type === "veil_of_shadows" && h.ownerId === player.sessionId);
+        if (hIdx !== -1) {
+            stealthRank = room.activeHazards[hIdx].rank;
+            room.broadcastNearby(player.x, player.y, 60, "removeHazard", { id: room.activeHazards[hIdx].id });
+            room.activeHazards.splice(hIdx, 1);
+        }
+
+        const breakVisual = stealthRank >= 3 ? "veil_of_shadows_burst" : "veil_of_shadows_break";
+        room.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: breakVisual, targetX: player.x, targetZ: player.y });
+
+        // AoE Silence Burst
+        if (stealthRank >= 3 && room.state.enemies) {
+            for (const e of room.enemyGrid.getNearby(player.x, player.y, 6.0)) {
+                if (distSq(e.x, e.y, player.x, player.y) <= 36.0) {
+                    applyEnemyDamage(room, player, e, 80, true);
+                    applyAffliction(e, "Silence", 3.0, 0, 0);
+                }
             }
+        }
+    }
+    return { brokeStealth, stealthRank };
+}
 
-            const breakVisual = stealthRank >= 3 ? "veil_of_shadows_burst" : "veil_of_shadows_break";
-            room.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: breakVisual, targetX: player.x, targetZ: player.y });
+function findBestMeleeEnemy(room: BaseRoom<any>, player: PlayerState, targetX: number, targetZ: number): EnemyState | null {
+    if (!room.state.enemies) return null;
 
-            if (stealthRank >= 3 && room.state.enemies) {
-                for (const e of room.enemyGrid.getNearby(player.x, player.y, 6.0)) {
-                    if (distSq(e.x, e.y, player.x, player.y) <= 36.0) {
-                        e.hp -= 80;
-                        applyAffliction(e, "Silence", 3.0, 0, 0);
-                        room.broadcastNearby(e.x, e.y, 40, "playerAttacked", { id: e.id, targetX: e.x, targetZ: e.y, damage: 80, isCrit: true });
-                        if (e.hp <= 0) { room.awardPlayerKill(player, e.name); room.removeEnemy(e.id); }
-                    }
+    let bestEnemy: EnemyState | null = null;
+
+    // 1. Direct Target Proximity Check (For exact clicks)
+    for (const enemy of room.enemyGrid.getNearby(targetX, targetZ, 2.0)) {
+        if (distSq(enemy.x, enemy.y, targetX, targetZ) <= 4.0) {
+            return enemy; 
+        }
+    }
+
+    // 2. Forgiving Cone Check (For Keyboard Users)
+    let closestDist = 16.0; // Max reach of 4 units
+    const forwardX = targetX - player.x;
+    const forwardZ = targetZ - player.y;
+    const len = Math.hypot(forwardX, forwardZ) || 1;
+    const nx = forwardX / len;
+    const nz = forwardZ / len;
+
+    for (const enemy of room.enemyGrid.getNearby(player.x, player.y, 4.0)) {
+        const dx = enemy.x - player.x;
+        const dz = enemy.y - player.y;
+        const distSqEnemy = dx * dx + dz * dz;
+
+        if (distSqEnemy <= closestDist) {
+            const ex = dx / Math.sqrt(distSqEnemy);
+            const ez = dz / Math.sqrt(distSqEnemy);
+            
+            // Dot product for cone angle (approx 60 degrees)
+            const dot = (nx * ex) + (nz * ez);
+            if (dot >= 0.5) { 
+                closestDist = distSqEnemy;
+                bestEnemy = enemy;
+            }
+        }
+    }
+
+    return bestEnemy;
+}
+
+function resolveMeleeHit(room: BaseRoom<any>, player: PlayerState, targetX: number, targetZ: number, brokeStealth: boolean, stealthRank: number): boolean {
+    const enemy = findBestMeleeEnemy(room, player, targetX, targetZ);
+    if (!enemy) return false;
+
+    room.addAbilityProficiency(player, "melee_combat", 1.5);
+    
+    let dmg = 15;
+    if (player.equippedItem) dmg += ITEM_DB[player.equippedItem]?.stats?.atk ?? 0;
+    if ((player as any).shadowMinionBuff && Date.now() < (player as any).shadowMinionBuff) dmg += 15;
+    if ((enemy as any).armorShattered || enemy.afflictions.has("Shattered Armor")) dmg = Math.floor(dmg * 1.15);
+    if (brokeStealth && stealthRank >= 1) dmg = Math.floor(dmg * 1.5);
+    
+    // Void Strike Consume
+    if (player.isAuraActive && player.auraStyle === "void") {
+        dmg = Math.floor(dmg * (1.5 + (player.auraControl * 0.2)));
+        player.isAuraActive = false; 
+        (player as any).stealthedUntil = 0;
+        room.broadcastNearby(player.x, player.y, 40, "abilityUsed", { id: player.sessionId, abilityId: "aura_shatter", targetX: player.x, targetZ: player.y });
+    }
+
+    // Static Charge Detonation
+    if (enemy.afflictions.has("Static Charge")) {
+        enemy.afflictions.delete("Static Charge");
+        room.broadcastNearby(enemy.x, enemy.y, 40, "abilityUsed", { id: enemy.id, abilityId: "divine_smite_silver", targetX: enemy.x, targetZ: enemy.y });
+        
+        for (const e of room.enemyGrid.getNearby(enemy.x, enemy.y, 4.0)) {
+            if (e.id !== enemy.id && distSq(e.x, e.y, enemy.x, enemy.y) <= 16.0) {
+                applyEnemyDamage(room, player, e, 50, true);
+            }
+        }
+    }
+
+    const isCrit = brokeStealth && stealthRank >= 1;
+    applyEnemyDamage(room, player, enemy, dmg, isCrit);
+    
+    return true;
+}
+
+function applyEnemyDamage(room: BaseRoom<any>, player: PlayerState, enemy: EnemyState, amount: number, isCrit: boolean) {
+    enemy.hp -= amount;
+    room.broadcastNearby(enemy.x, enemy.y, 40, "playerAttacked", { 
+        id: enemy.id, 
+        targetX: enemy.x, 
+        targetZ: enemy.y, 
+        damage: amount, 
+        isCrit: isCrit 
+    });
+    
+    if (enemy.hp <= 0) {
+        room.awardPlayerKill(player, enemy.name);
+        
+        // Sanguine Feast 
+        if ((enemy as any).sanguineFeastSpread) {
+            const splinters: EnemyState[] = [];
+            for (const e of room.enemyGrid.getNearby(enemy.x, enemy.y, 8.0)) {
+                if (e.id !== enemy.id) splinters.push(e);
+            }
+            let spreadCount = 0;
+            for (const n of splinters) {
+                if (spreadCount >= 2) break;
+                applyAffliction(n, "Bleed", 4.0, 10, 1.0, 1, 3);
+                spreadCount++;
+            }
+        }
+        
+        // Blood Explosion
+        if ((enemy as any).bloodExplosionOnDeath) {
+            for (const p of room.playerGrid.getNearby(enemy.x, enemy.y, 8.0)) {
+                if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) {
+                    p.hp = Math.min(p.maxHp, p.hp + 50);
                 }
             }
         }
 
-        room.broadcastNearby(player.x, player.y, 50, "playerAttacked", { id: client.sessionId, targetX: message.targetX, targetZ: message.targetZ });
+        room.removeEnemy(enemy.id);
+    }
+}
 
-        let hitSomething = false;
+function resolveGeminiMimicAttack(room: BaseRoom<any>, player: PlayerState, targetX: number, targetZ: number) {
+    const familiarId = `fam_${player.sessionId}`;
+    const familiar = room.state.familiars?.get(familiarId);
+
+    if (familiar && familiar.type === "astral_reflection" && familiar.action === "orbiting" && familiar.hp > 0) {
+        const geminiRank = player.skillTree.activeAbilities.get("gemini_base")?.upgrades.get("mimicry")?.currentRank || 1;
+        const dmgMult = geminiRank >= 5 ? 0.3 : (geminiRank >= 3 ? 0.2 : 0.1);
+        
+        room.broadcastNearby(familiar.x, familiar.y, 50, "playerAttacked", { id: familiar.id, targetX: targetX, targetZ: targetZ });
         
         if (room.state.enemies) {
-            for (const enemy of room.enemyGrid.getNearby(message.targetX, message.targetZ, 2.0)) {
-                if (distSq(enemy.x, enemy.y, message.targetX, message.targetZ) <= 4.0) {
-                    hitSomething = true;
-                    room.addAbilityProficiency(player, "melee_combat", 1.5);
-                    
-                    let dmg = 15;
-                    if (player.equippedItem) dmg += ITEM_DB[player.equippedItem]?.stats?.atk ?? 0;
-                    if ((player as any).shadowMinionBuff && Date.now() < (player as any).shadowMinionBuff) dmg += 15;
-                    if ((enemy as any).armorShattered || enemy.afflictions.has("Shattered Armor")) dmg = Math.floor(dmg * 1.15);
-                    if (brokeStealth && stealthRank >= 1) dmg = Math.floor(dmg * 1.5);
-                    
-                    if (player.isAuraActive && player.auraStyle === "void") {
-                        dmg = Math.floor(dmg * (1.5 + (player.auraControl * 0.2)));
-                        player.isAuraActive = false; 
-                        (player as any).stealthedUntil = 0;
-                        room.broadcastNearby(player.x, player.y, 40, "abilityUsed", { id: player.sessionId, abilityId: "aura_shatter", targetX: player.x, targetZ: player.y });
-                    }
+            for (const enemy of room.enemyGrid.getNearby(targetX, targetZ, 2.0)) {
+                 if (distSq(enemy.x, enemy.y, familiar.x + (targetX - player.x), familiar.y + (targetZ - player.y)) <= 9.0) {
+                     let baseDmg = 15;
+                     if (player.equippedItem) baseDmg += ITEM_DB[player.equippedItem]?.stats?.atk ?? 0;
+                     
+                     const mimicDmg = Math.floor(baseDmg * dmgMult);
+                     applyEnemyDamage(room, player, enemy, mimicDmg, false);
+                 }
+            }
+        }
+    }
+}
 
-                    if (enemy.afflictions.has("Static Charge")) {
-                        enemy.afflictions.delete("Static Charge");
-                        room.broadcastNearby(enemy.x, enemy.y, 40, "abilityUsed", { id: enemy.id, abilityId: "divine_smite_silver", targetX: enemy.x, targetZ: enemy.y });
-                        
-                        for (const e of room.enemyGrid.getNearby(enemy.x, enemy.y, 4.0)) {
-                            if (e.id !== enemy.id && distSq(e.x, e.y, enemy.x, enemy.y) <= 16.0) {
-                                e.hp -= 50;
-                                room.broadcastNearby(e.x, e.y, 40, "playerAttacked", { id: e.id, targetX: e.x, targetZ: e.y, damage: 50, isCrit: true });
-                                if (e.hp <= 0) { room.awardPlayerKill(player, e.name); room.removeEnemy(e.id); }
-                            }
-                        }
-                    }
+function resolveSceneryHit(room: BaseRoom<any>, player: PlayerState, targetX: number, targetZ: number) {
+    if (!room.state.scenery) return;
 
-                    enemy.hp -= dmg;
-                    room.broadcastNearby(enemy.x, enemy.y, 40, "playerAttacked", { id: enemy.id, targetX: enemy.x, targetZ: enemy.y, damage: dmg, isCrit: brokeStealth && stealthRank >= 1 });
-                    
-                    if (enemy.hp <= 0) {
-                        room.awardPlayerKill(player, enemy.name);
-                        
-                        if ((enemy as any).sanguineFeastSpread) {
-                            const splinters: EnemyState[] = [];
-                            for (const e of room.enemyGrid.getNearby(enemy.x, enemy.y, 8.0)) {
-                                if (e.id !== enemy.id) splinters.push(e);
-                            }
-                            let spreadCount = 0;
-                            for (const n of splinters) {
-                                if (spreadCount >= 2) break;
-                                applyAffliction(n, "Bleed", 4.0, 10, 1.0, 1, 3);
-                                spreadCount++;
-                            }
-                        }
-                        
-                        if ((enemy as any).bloodExplosionOnDeath) {
-                            for (const p of room.playerGrid.getNearby(enemy.x, enemy.y, 8.0)) {
-                                if (distSq(p.x, p.y, enemy.x, enemy.y) <= 64.0) {
-                                    p.hp = Math.min(p.maxHp, p.hp + 50);
-                                }
-                            }
-                        }
+    let bestScenery: SceneryState | null = null;
+    let bestScore = -Infinity;
+    const attackRangeSq = 36.0;
+    
+    for (const scenery of room.sceneryGrid.getNearby(player.x, player.y, 6.0)) {
+        const dx = scenery.x - player.x; const dy = scenery.y - player.y; 
+        const distS = dx * dx + dy * dy;
 
-                        room.removeEnemy(enemy.id);
-                    }
-                }
+        if (distS <= attackRangeSq) { 
+            const angleToScenery = Math.atan2(dx, dy);
+            const angleOfAttack = Math.atan2(targetX - player.x, targetZ - player.y);
+            
+            let angleDiff = angleToScenery - angleOfAttack;
+            while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+            while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+            
+            if (Math.abs(angleDiff) < Math.PI / 2.5) { 
+                const score = -Math.sqrt(distS) - (Math.abs(angleDiff) * 3);
+                if (score > bestScore) { bestScore = score; bestScenery = scenery; }
+            }
+        }
+    }
+
+    if (bestScenery) {
+        room.addAbilityProficiency(player, "gathering", 1.0);
+        
+        const isRock = bestScenery.kind.includes("rock");
+        let damage = 1; 
+        const toolDef = ITEM_DB[player.equippedItem];
+        if (toolDef && toolDef.type === "tool" && toolDef.stats?.gatherDamage) {
+            if ((isRock && toolDef.name.includes("Pickaxe")) || (!isRock && toolDef.name.includes("Axe"))) {
+                damage = toolDef.stats.gatherDamage;
             }
         }
 
-        const familiarId = `fam_${client.sessionId}`;
-        const familiar = room.state.familiars?.get(familiarId);
-        if (familiar && familiar.type === "astral_reflection" && familiar.action === "orbiting" && familiar.hp > 0) {
-            const geminiRank = player.skillTree.activeAbilities.get("gemini_base")?.upgrades.get("mimicry")?.currentRank || 1;
-            const dmgMult = geminiRank >= 5 ? 0.3 : (geminiRank >= 3 ? 0.2 : 0.1);
-            
-            room.broadcastNearby(familiar.x, familiar.y, 50, "playerAttacked", { id: familiar.id, targetX: message.targetX, targetZ: message.targetZ });
-            
-            if (room.state.enemies) {
-                for (const enemy of room.enemyGrid.getNearby(message.targetX, message.targetZ, 2.0)) {
-                     if (distSq(enemy.x, enemy.y, familiar.x + (message.targetX - player.x), familiar.y + (message.targetZ - player.y)) <= 9.0) {
-                         let baseDmg = 15;
-                         if (player.equippedItem) baseDmg += ITEM_DB[player.equippedItem]?.stats?.atk ?? 0;
-                         
-                         const mimicDmg = Math.floor(baseDmg * dmgMult);
-                         enemy.hp -= mimicDmg;
-                         room.broadcastNearby(enemy.x, enemy.y, 40, "playerAttacked", { id: enemy.id, targetX: enemy.x, targetZ: enemy.y, damage: mimicDmg, isCrit: false });
-                         if (enemy.hp <= 0) { room.awardPlayerKill(player, enemy.name); room.removeEnemy(enemy.id); }
-                     }
-                }
-            }
-        }
+        bestScenery.hp -= damage;
 
-        if (!hitSomething && room.state.scenery) {
-            let bestScenery: SceneryState | null = null;
-            let bestScore = -Infinity;
-            const attackRangeSq = 36.0;
+        if (bestScenery.hp <= 0) {
+            let lootName = isRock ? "Stone" : "Wood";
             
-            for (const scenery of room.sceneryGrid.getNearby(player.x, player.y, 6.0)) {
-                const dx = scenery.x - player.x; const dy = scenery.y - player.y; 
-                const distS = dx * dx + dy * dy;
+            let biome = "forest";
+            if (bestScenery.x > 800) biome = "elven";
+            else if (bestScenery.y < -800) biome = "winter"; 
+            else if (bestScenery.y > 800) biome = "desert";
+            else if (bestScenery.x < -800) biome = "swamp";
 
-                if (distS <= attackRangeSq) { 
-                    const angleToScenery = Math.atan2(dx, dy);
-                    const angleOfAttack = Math.atan2(message.targetX - player.x, message.targetZ - player.y);
-                    
-                    let angleDiff = angleToScenery - angleOfAttack;
-                    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-                    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-                    
-                    if (Math.abs(angleDiff) < Math.PI / 2.5) { 
-                        const score = -Math.sqrt(distS) - (Math.abs(angleDiff) * 3);
-                        if (score > bestScore) { bestScore = score; bestScenery = scenery; }
-                    }
-                }
+            if (Math.random() < 0.15) {
+                if (isRock && biome === "winter") lootName = "Glacial Ore";
+                else if (isRock && biome === "desert") lootName = "Sun-baked Clay";
+                else if (!isRock && biome === "swamp") lootName = "Ironwood";
+                else if (isRock && biome === "elven") lootName = "Aethelgard Crystal";
             }
 
-            if (bestScenery) {
-                room.addAbilityProficiency(player, "gathering", 1.0);
-                
-                const isRock = bestScenery.kind.includes("rock");
-                let damage = 1; 
-                const toolDef = ITEM_DB[player.equippedItem];
-                if (toolDef && toolDef.type === "tool" && toolDef.stats?.gatherDamage) {
-                    if ((isRock && toolDef.name.includes("Pickaxe")) || (!isRock && toolDef.name.includes("Axe"))) {
-                        damage = toolDef.stats.gatherDamage;
-                    }
-                }
-
-                bestScenery.hp -= damage;
-
-                if (bestScenery.hp <= 0) {
-                    let lootName = isRock ? "Stone" : "Wood";
-                    
-                    let biome = "forest";
-                    if (bestScenery.x > 800) biome = "elven";
-                    else if (bestScenery.y < -800) biome = "winter"; 
-                    else if (bestScenery.y > 800) biome = "desert";
-                    else if (bestScenery.x < -800) biome = "swamp";
-
-                    if (Math.random() < 0.15) {
-                        if (isRock && biome === "winter") lootName = "Glacial Ore";
-                        else if (isRock && biome === "desert") lootName = "Sun-baked Clay";
-                        else if (!isRock && biome === "swamp") lootName = "Ironwood";
-                        else if (isRock && biome === "elven") lootName = "Aethelgard Crystal";
-                    }
-
-                    for(let i=0; i<3; i++) { 
-                        (room as any).spawnDrop(bestScenery.x + (Math.random() - 0.5) * 1.5, bestScenery.y + (Math.random() - 0.5) * 1.5, lootName); 
-                    }
-
-                    room.progressQuest(player, "gather", isRock ? "Stone" : "Wood", 3, client); 
-
-                    const originalScenery = new SceneryState();
-                    originalScenery.id = bestScenery.id; originalScenery.kind = bestScenery.kind;
-                    originalScenery.x = bestScenery.x; originalScenery.y = bestScenery.y;
-                    originalScenery.scale = bestScenery.scale; originalScenery.rotation = bestScenery.rotation;
-                    originalScenery.maxHp = bestScenery.maxHp; originalScenery.hp = bestScenery.maxHp;
-
-                    room.sceneryGrid.remove(bestScenery, bestScenery.x, bestScenery.y);
-                    room.state.scenery.delete(bestScenery.id);
-
-                    setTimeout(() => {
-                        room.state.scenery?.set(originalScenery.id, originalScenery);
-                        room.sceneryGrid.add(originalScenery, originalScenery.x, originalScenery.y);
-                    }, 60000);
-                }
+            for(let i=0; i<3; i++) { 
+                (room as any).spawnDrop(bestScenery.x + (Math.random() - 0.5) * 1.5, bestScenery.y + (Math.random() - 0.5) * 1.5, lootName); 
             }
+
+            room.progressQuest(player, "gather", isRock ? "Stone" : "Wood", 3, room.clients.find(c => c.sessionId === player.sessionId)); 
+
+            const originalScenery = new SceneryState();
+            originalScenery.id = bestScenery.id; originalScenery.kind = bestScenery.kind;
+            originalScenery.x = bestScenery.x; originalScenery.y = bestScenery.y;
+            originalScenery.scale = bestScenery.scale; originalScenery.rotation = bestScenery.rotation;
+            originalScenery.maxHp = bestScenery.maxHp; originalScenery.hp = bestScenery.maxHp;
+
+            room.sceneryGrid.remove(bestScenery, bestScenery.x, bestScenery.y);
+            room.state.scenery.delete(bestScenery.id);
+
+            setTimeout(() => {
+                room.state.scenery?.set(originalScenery.id, originalScenery);
+                room.sceneryGrid.add(originalScenery, originalScenery.x, originalScenery.y);
+            }, 60000);
         }
     }
 }
@@ -451,7 +528,18 @@ export function updateEnemies(room: BaseRoom<any>, dt: number) {
                 enemy.isAttacking = false; 
                 enemy.attackCooldown = enemy.maxAttackCooldown || 2.0;
                 
-                room.broadcastNearby(enemy.targetX, enemy.targetY, 50, "enemyAttackExecuted", { id: enemyId, type: enemy.attackType, x: enemy.targetX, z: enemy.targetY, radius: enemy.attackRadius });
+                // Add unique attack ID here
+                const attackId = `${enemyId}_${Date.now()}`;
+
+                room.broadcastNearby(enemy.targetX, enemy.targetY, 50, "enemyAttackExecuted", { 
+                    id: enemyId, 
+                    attackId: attackId,
+                    type: enemy.attackType, 
+                    x: enemy.targetX, 
+                    z: enemy.targetY, 
+                    radius: enemy.attackRadius 
+                });
+
                 const hitR = (enemy.attackRadius || 2.5) + (enemy.attackType === "melee" ? 0.5 : 0);
                 const hitRSq = hitR * hitR;
                 

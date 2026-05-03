@@ -57,7 +57,15 @@ const COMMUNION_QUESTIONS = [
     { question: "What security system monitors and controls incoming network traffic?", options: ["Antivirus", "Firewall", "VPN", "Proxy"], answer: "Firewall" }
 ];
 
-export type MoveMessage = { x: number; y?: number; z?: number; seq?: number; };
+// Replaced raw positions with input directions
+export type MoveMessage = { 
+    inputX: number; 
+    inputZ: number; 
+    sprint?: boolean;
+    seq?: number; 
+    clientTime?: number;
+};
+
 export type DodgeMessage = { dx: number; dy?: number; dz?: number; };
 export type AttackMessage = { targetX: number; targetZ: number; };
 
@@ -105,6 +113,8 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
     public lastAttackTimes = new Map<string, number>();
 
     private actionQueue: QueuedAction[] = [];
+    private queuedActionCounts = new Map<string, number>();
+
     private dirtyPlayers = new Set<string>(); 
 
     public static availableEvents = [
@@ -340,6 +350,103 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         this.broadcast("global_event_sync", { name, remainingMs });
     }
 
+    // ==========================================
+    // COLLISION & MOVEMENT HELPERS
+    // ==========================================
+
+    /**
+     * Unified method for safely moving a player, checking collisions, updating grids,
+     * and optionally forcing the client position.
+     */
+    public tryMovePlayerTo(
+        player: PlayerState,
+        client: Client,
+        targetX: number,
+        targetZ: number,
+        options: {
+            maxDistance?: number;
+            ignoreCollision?: boolean;
+            force?: boolean;
+            visualAbilityId?: string;
+        } = {}
+    ): { x: number; z: number; moved: boolean } {
+        
+        let nextX = targetX;
+        let nextZ = targetZ;
+
+        // 1. Clamp Range
+        if (options.maxDistance && options.maxDistance > 0) {
+            const reqDistSq = distSq(player.x, player.y, targetX, targetZ);
+            const maxSq = options.maxDistance * options.maxDistance;
+            
+            if (reqDistSq > maxSq) {
+                const dist = Math.sqrt(reqDistSq);
+                const ratio = options.maxDistance / dist;
+                nextX = player.x + (targetX - player.x) * ratio;
+                nextZ = player.y + (targetZ - player.y) * ratio;
+            }
+        }
+
+        // 2. Validate Collision
+        const isTown = this.roomName === "town" || this.constructor.name === "TownRoom";
+        const isMaze = this.roomName === "maze" || this.constructor.name === "MazeRoom";
+        const isUnderworld = this.roomName === "underworld" || this.constructor.name === "UnderworldRoom";
+        
+        if (!options.ignoreCollision && !(player as any).isFlying) {
+            const serverRadius = 0.5;
+
+            // X Axis Check
+            const isSafeDistX = (nextX * nextX + player.y * player.y) < 87025; 
+            const hitTownX = isTown && checkTownCollision(nextX, player.y, serverRadius);
+            const hitDynX = checkDynamicCollision(this.state, nextX, player.y, serverRadius);
+            const hitMazeX = isMaze && checkMazeCollision(nextX, player.y, serverRadius);
+            const hitUnderX = isUnderworld && isSafeDistX && checkUnderworldCollision(nextX, player.y, serverRadius);
+            
+            if (hitTownX || hitDynX || hitMazeX || hitUnderX) {
+                nextX = player.x;
+            }
+
+            // Z Axis Check
+            const isSafeDistY = (nextX * nextX + nextZ * nextZ) < 87025;
+            const hitTownY = isTown && checkTownCollision(nextX, nextZ, serverRadius);
+            const hitDynY = checkDynamicCollision(this.state, nextX, nextZ, serverRadius);
+            const hitMazeY = isMaze && checkMazeCollision(nextX, nextZ, serverRadius);
+            const hitUnderY = isUnderworld && isSafeDistY && checkUnderworldCollision(nextX, nextZ, serverRadius);
+            
+            if (hitTownY || hitDynY || hitMazeY || hitUnderY) {
+                nextZ = player.y; // 'y' is used as Z in the colyseus schema
+            }
+        }
+
+        // World Bounds Clamp
+        nextX = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextX));
+        nextZ = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextZ));
+
+        // 3. Grid Update
+        const oldX = player.x;
+        const oldY = player.y; // Z in world space
+        player.x = nextX;
+        player.y = nextZ;
+        
+        this.playerGrid.update(player, oldX, oldY, player.x, player.y);
+
+        // 4. Feedback
+        if (options.force) {
+            client.send("forcePosition", { x: player.x, z: player.y });
+        }
+
+        if (options.visualAbilityId) {
+            this.broadcastNearby(player.x, player.y, 40, "abilityUsed", { 
+                id: player.sessionId, 
+                abilityId: options.visualAbilityId, 
+                targetX: player.x, 
+                targetZ: player.y 
+            });
+        }
+
+        return { x: player.x, z: player.y, moved: (oldX !== player.x || oldY !== player.y) };
+    }
+
     async onCreate(options: any) {
         
         setupTradeSystem(this);
@@ -434,6 +541,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         });
 
         this.onMessage("move", (client, message: MoveMessage) => {
+            // Check rate limits
+            const count = this.queuedActionCounts.get(client.sessionId) || 0;
+            if (count > 8) return; // Prevent queue flooding
+            this.queuedActionCounts.set(client.sessionId, count + 1);
+
             this.actionQueue.push({ type: "move", client, data: message });
         });
 
@@ -476,7 +588,6 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
 
                 if (isNearNPC) {
-                    // Pass it to your existing QuestController
                     this.progressQuest(player, "action", message.npcId, 1, client);
                 } else {
                     client.send("hud_message", "You are too far away to speak to them.");
@@ -550,18 +661,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                         (player as any).mountedFamiliarId = familiarId;
                         familiar.action = "mounted";
                         
-                        const oldPlayerX = player.x;
-                        const oldPlayerY = player.y;
-                        const oldFamX = familiar.x;
-                        const oldFamY = familiar.y;
-
-                        player.x = familiar.x;
-                        player.y = familiar.y;
-
-                        this.playerGrid.update(player, oldPlayerX, oldPlayerY, player.x, player.y);
-                        this.familiarGrid.update(familiar, oldFamX, oldFamY, familiar.x, familiar.y);
-
-                        this.broadcastNearby(player.x, player.y, 60, "abilityUsed", { id: player.sessionId, abilityId: "mount_up", targetX: player.x, targetZ: player.y });
+                        this.tryMovePlayerTo(player, client, familiar.x, familiar.y, { 
+                            ignoreCollision: true,
+                            visualAbilityId: "mount_up"
+                        });
                     } else {
                         client.send("hud_message", "Familiar is not strong enough to carry you yet.");
                     }
@@ -1036,11 +1139,11 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             if (travRank >= 3) {
                 const marker = this.activeHazards.find(h => h.type === "map_marker" && h.ownerId === client.sessionId);
                 if (marker) {
-                    const oldX = player.x; const oldY = player.y;
-                    player.x = marker.x; player.y = marker.y;
-                    this.playerGrid.update(player, oldX, oldY, player.x, player.y);
-                    client.send("forcePosition", { x: marker.x, z: marker.y });
-                    this.broadcastNearby(marker.x, marker.y, 40, "abilityUsed", { id: player.sessionId, abilityId: "teleport_warp", targetX: marker.x, targetZ: marker.y });
+                    this.tryMovePlayerTo(player, client, marker.x, marker.y, { 
+                        force: true, 
+                        ignoreCollision: true,
+                        visualAbilityId: "teleport_warp" 
+                    });
                 }
             }
         });
@@ -1206,10 +1309,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 this.lastAttackTimes.set(client.sessionId, now);
 
                 const lungeDist = 2.0;
-                const oldX = player.x; const oldY = player.y;
-                player.x += (message.dx * lungeDist);
-                player.y += (message.dy * lungeDist);
-                this.playerGrid.update(player, oldX, oldY, player.x, player.y);
+                
+                this.tryMovePlayerTo(player, client, player.x + (message.dx * lungeDist), player.y + (message.dy * lungeDist), {
+                    ignoreCollision: false 
+                });
 
                 const attackX = player.x + (message.dx * 1.5);
                 const attackZ = player.y + (message.dy * 1.5);
@@ -1235,6 +1338,10 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
     private processActionQueue() {
         const queueSize = this.actionQueue.length;
+        
+        // Clear rate limits
+        this.queuedActionCounts.clear();
+
         for (let i = 0; i < queueSize; i++) {
             const action = this.actionQueue.shift();
             if (!action) continue;
@@ -1267,14 +1374,13 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             return;
         }
 
-        const targetX = message.x;
-        const targetY = message.z !== undefined ? message.z : message.y;
-        if (targetX === undefined || targetY === undefined) return;
+        if (message.inputX === undefined || message.inputZ === undefined) return;
 
         if (message.seq !== undefined) {
             (player as any).lastProcessedInput = message.seq;
         }
 
+        // Server-Side Delta Time Calculation
         const now = Date.now();
         let dt = 0.05; 
         
@@ -1288,128 +1394,43 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
         }
         this.lastMoveTimes.set(client.sessionId, now);
 
-        const isTown = this.roomName === "town" || this.constructor.name === "TownRoom";
-        const isMaze = this.roomName === "maze" || this.constructor.name === "MazeRoom";
-        const isUnderworld = this.roomName === "underworld" || this.constructor.name === "UnderworldRoom";
+        // Normalize Input
+        const len = Math.hypot(message.inputX, message.inputZ) || 1;
+        const nx = message.inputX / len;
+        const nz = message.inputZ / len;
 
-        const mountedFamiliarId = (player as any).mountedFamiliarId;
-        if (mountedFamiliarId && mountedFamiliarId !== "") {
-            const familiar = this.state.familiars?.get(mountedFamiliarId);
-            if (familiar && familiar.hp > 0) {
-                const isFlying = (player as any).isFlying;
-                let nextX = targetX;
-                let nextY = targetY;
-
-                if (!isFlying) {
-                    const hitTownX = isTown && checkTownCollision(nextX, player.y, 0.5);
-                    const hitDynX = checkDynamicCollision(this.state, nextX, player.y, 0.5);
-                    const hitMazeX = isMaze && checkMazeCollision(nextX, player.y, 0.5);
-                    const hitUnderX = isUnderworld && checkUnderworldCollision(nextX, player.y, 0.5);
-                    if (hitTownX || hitDynX || hitMazeX || hitUnderX) nextX = player.x;
-
-                    const hitTownY = isTown && checkTownCollision(player.x, nextY, 0.5);
-                    const hitDynY = checkDynamicCollision(this.state, player.x, nextY, 0.5);
-                    const hitMazeY = isMaze && checkMazeCollision(player.x, nextY, 0.5);
-                    const hitUnderY = isUnderworld && checkUnderworldCollision(player.x, nextY, 0.5);
-                    if (hitTownY || hitDynY || hitMazeY || hitUnderY) nextY = player.y;
-                }
-
-                const oldPlayerX = player.x;
-                const oldPlayerY = player.y;
-                const oldFamX = familiar.x;
-                const oldFamY = familiar.y;
-
-                familiar.x = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextX));
-                familiar.y = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextY));
-                
-                player.x = familiar.x;
-                player.y = familiar.y;
-
-                this.playerGrid.update(player, oldPlayerX, oldPlayerY, player.x, player.y);
-                this.familiarGrid.update(familiar, oldFamX, oldFamY, familiar.x, familiar.y);
-            } else {
-                (player as any).mountedFamiliarId = "";
-                (player as any).isFlying = false;
-            }
-            return; 
-        }
-
-        const moveSpeed = player.isSprinting ? player.movementSpeed * 1.6 : player.movementSpeed;
+        const isSprinting = message.sprint && player.hunger > 0;
+        const moveSpeed = isSprinting ? player.movementSpeed * 1.6 : player.movementSpeed;
         
-        const allowedDistSq = (moveSpeed * dt * 1.5 + 4.5) ** 2;
-        const requestedDistSq = distSq(player.x, player.y, targetX, targetY);
+        // Calculate the simulated target position
+        const targetX = player.x + (nx * moveSpeed * dt);
+        const targetZ = player.y + (nz * moveSpeed * dt);
 
         const isWolf = player.isSpiritAnimal || this.activeHazards.some(h => h.type === "spirit_animal" && h.ownerId === client.sessionId);
         
-        let serverX = player.x;
-        let serverY = player.y;
-        
-        let debugReason = "";
-        let nextX = targetX;
-        let nextY = targetY;
+        // We use tryMovePlayerTo to handle the grid logic and collision checks.
+        // It returns whether the player successfully moved or was clamped.
+        const res = this.tryMovePlayerTo(player, client, targetX, targetZ, {
+            ignoreCollision: isWolf 
+        });
 
-        if (requestedDistSq > allowedDistSq) {
-            const dist = Math.sqrt(requestedDistSq);
-            const maxDist = Math.sqrt(allowedDistSq);
-            const ratio = maxDist / dist;
-            nextX = player.x + (targetX - player.x) * ratio;
-            nextY = player.y + (targetY - player.y) * ratio;
-            debugReason += `[Clamped: Req ${dist.toFixed(1)} > Max ${maxDist.toFixed(1)}] `;
-        }
+        // -------------------------------------------------------------
+        // TIERED RECONCILIATION
+        // Smoothly correct small drifts, but rubberband large deviations
+        // -------------------------------------------------------------
+        const errorDistSq = distSq(targetX, targetZ, res.x, res.z);
 
-        let blockedX = false;
-        let blockedY = false;
-
-        if (!isWolf) {
-            const serverRadius = 0.5;
-            
-            const isSafeDistX = (nextX * nextX + player.y * player.y) < 87025; 
-            const isSafeDistY = (nextX * nextX + nextY * nextY) < 87025;
-
-            const hitTownX = isTown && checkTownCollision(nextX, player.y, serverRadius);
-            const hitDynX = checkDynamicCollision(this.state, nextX, player.y, serverRadius);
-            const hitMazeX = isMaze && checkMazeCollision(nextX, player.y, serverRadius);
-            const hitUnderX = isUnderworld && isSafeDistX && checkUnderworldCollision(nextX, player.y, serverRadius);
-            
-            blockedX = hitTownX || hitDynX || hitMazeX || hitUnderX;
-
-            if (blockedX) {
-                nextX = player.x;
-                if (isTown) debugReason += `[X-Block] `;
-            }
-
-            const hitTownY = isTown && checkTownCollision(nextX, nextY, serverRadius);
-            const hitDynY = checkDynamicCollision(this.state, nextX, nextY, serverRadius);
-            const hitMazeY = isMaze && checkMazeCollision(nextX, nextY, serverRadius);
-            const hitUnderY = isUnderworld && isSafeDistY && checkUnderworldCollision(nextX, nextY, serverRadius);
-            
-            blockedY = hitTownY || hitDynY || hitMazeY || hitUnderY;
-
-            if (blockedY) {
-                nextY = player.y;
-                if (isTown) debugReason += `[Y-Block] `;
-            }
-        }
-
-        serverX = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextX));
-        serverY = Math.max(-WORLD_RADIUS, Math.min(WORLD_RADIUS, nextY));
-
-        const errorDistSq = distSq(targetX, targetY, serverX, serverY);
-        
-        const TOLERANCE_SQ = 64.0; 
-        const SLIDE_TOLERANCE_SQ = 0.05; 
-
-        const oldX = player.x;
-        const oldY = player.y;
-        player.x = serverX;
-        player.y = serverY;
-        this.playerGrid.update(player, oldX, oldY, player.x, player.y);
-
-        if (errorDistSq > TOLERANCE_SQ) {
-            console.warn(`[SNAP] ${player.name} snapped. ErrorDistSq: ${errorDistSq.toFixed(2)}. Reason: ${debugReason}`);
-            client.send("forcePosition", { x: player.x, z: player.y });
-        } else if ((blockedX || blockedY) && errorDistSq > SLIDE_TOLERANCE_SQ) {
-            client.send("forcePosition", { x: player.x, z: player.y });
+        if (errorDistSq > 4.0) {
+            // Large Error: Rubberband (Force Snap)
+            client.send("forcePosition", { x: res.x, z: res.z });
+        } else if (errorDistSq > 0.0625) { 
+            // Moderate Error (0.25 - 2.0 dist): Smooth Correction
+            client.send("positionCorrection", {
+                x: res.x,
+                z: res.z,
+                lastProcessedInput: (player as any).lastProcessedInput,
+                mode: "smooth"
+            });
         }
     }
 
