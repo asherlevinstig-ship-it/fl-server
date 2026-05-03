@@ -501,6 +501,15 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             this.actionQueue.push({ type: "interact", client });
         });
 
+        this.onMessage("quest_action", (client, message: { actionId: string }) => {
+            const player = this.state.players.get(client.sessionId);
+            if (!player || player.isSleeping || player.isMeditating) return;
+
+            if (message.actionId === "toggle_utility") {
+                this.progressQuest(player, "action", "toggle_utility", 1, client);
+            }
+        });
+
         this.onMessage("setSprint", (client, data) => {
             const player = this.state.players.get(client.sessionId);
             if (player && !player.isSleeping && !player.isMeditating && Date.now() >= player.rootedUntil) {
