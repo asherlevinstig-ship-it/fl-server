@@ -462,6 +462,58 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             }
         });
 
+        this.onMessage("talk_npc", (client, message: { npcId: string }) => {
+            try {
+                const player = this.state.players.get(client.sessionId);
+                if (!player || player.isSleeping || player.isMeditating) return;
+
+                // Safely check distance to prevent spoofing/errors
+                let isNearNPC = false;
+                if (message.npcId === "lord_protector") {
+                    // Lord Protector is at X: 35, Z: -35 in TownScene
+                    const distSqCalc = distSq(player.x, player.y, 35, -35);
+                    if (distSqCalc <= 400.0) isNearNPC = true; // Within 20 units
+                }
+
+                if (isNearNPC) {
+                    // Pass it to your existing QuestController
+                    this.progressQuest(player, "action", message.npcId, 1, client);
+                } else {
+                    client.send("hud_message", "You are too far away to speak to them.");
+                }
+            } catch (err) {
+                console.error(`[Quest Error] Failed to process NPC talk for ${client.sessionId}:`, err);
+            }
+        });
+
+        this.onMessage("acceptQuest", (client, message: { questId: string }) => {
+            try {
+                const player = this.state.players.get(client.sessionId);
+                if (!player) return;
+
+                // Ensure the quest isn't already active or completed
+                if (!player.activeQuests.has(message.questId) && !player.completedQuests.includes(message.questId)) {
+                    
+                    const newQuest = new QuestProgressState();
+                    newQuest.questId = message.questId;
+                    newQuest.currentAmount = 0;
+                    newQuest.isCompleted = false;
+                    
+                    player.activeQuests.set(message.questId, newQuest);
+                    this.markPlayerDirty(client.sessionId);
+                    
+                    client.send("server_event_log", {
+                        html: `📜 <b style="color: #00ffaa;">Quest Accepted!</b> Check your tracker.`,
+                        type: "event-info"
+                    });
+                } else {
+                    client.send("hud_message", "You already have this quest or have completed it.");
+                }
+            } catch (err) {
+                console.error(`[Quest Error] Failed to accept quest for ${client.sessionId}:`, err);
+            }
+        });
+
         this.onMessage("setSprint", (client, data) => {
             const player = this.state.players.get(client.sessionId);
             if (player && !player.isSleeping && !player.isMeditating && Date.now() >= player.rootedUntil) {
@@ -707,7 +759,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
             this.removePlayerFromTeam(message.targetSessionId, true);
         });
 
-       this.onMessage("quick_chat", (client, message: { channel: "local" | "team" | "global", msgId: string }) => {
+        this.onMessage("quick_chat", (client, message: { channel: "local" | "team" | "global", msgId: string }) => {
             const p = this.state.players.get(client.sessionId);
             if (!p || p.isSleeping || p.isMeditating) return;
 
