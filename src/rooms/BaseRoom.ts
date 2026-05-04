@@ -1302,9 +1302,9 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
 
             const now = Date.now();
             if (now - (this.lastAttackTimes.get(client.sessionId) || 0) >= 600) {
-                if (player.hunger < 0.2) return;
+                if (player.hunger < 0.05) return;
 
-                player.hunger -= 0.2;
+                player.hunger -= 0.05;
                 player.stamina = player.hunger;
                 this.lastAttackTimes.set(client.sessionId, now);
 
@@ -1839,7 +1839,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 if (player.isAuraActive) {
                     let mpDrain = Math.max(2.0, 5.0 + (player.auraStrength * 4.0) - (player.auraControl * 3.0));
                     
-                    let energyDrain = Math.max(0.1, 0.5 + (player.auraStrength * 0.2) - (player.auraControl * 0.15));
+                    let energyDrain = Math.max(0.01, 0.05 + (player.auraStrength * 0.02) - (player.auraControl * 0.015));
 
                     if (player.auraStyle === "void") energyDrain *= 1.5;
                     if (player.auraStyle === "sanctuary") mpDrain *= 1.5;
@@ -1867,7 +1867,7 @@ export class BaseRoom<T extends IBaseState> extends Room<{ state: T }> {
                 }
 
                 if (player.isSprinting) {
-                    player.hunger -= 0.15 * dt; 
+                    player.hunger -= 0.04 * dt; 
                     if (player.hunger <= 0) {
                         player.hunger = 0; player.isSprinting = false;
                     }
